@@ -1,0 +1,24 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e7e9ee; background: #111318; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 1100px; overflow: hidden; background: #111318; }
+button { color: inherit; background: transparent; border: 0; cursor: pointer; }
+.studio { height: 100vh; display: flex; flex-direction: column; }
+.topbar { height: 48px; display: flex; align-items: center; gap: 28px; padding: 0 16px; border-bottom: 1px solid #292d36; background: #17191f; }
+.topbar nav { display: flex; gap: 4px; }
+.topbar nav button { padding: 7px 10px; border-radius: 5px; color: #aeb4c0; }
+.topbar nav button:hover { background: #252934; color: #fff; }
+.workspace { min-height: 0; flex: 1; display: grid; grid-template-columns: 240px minmax(500px, 1fr) 280px; }
+.panel { background: #17191f; padding: 14px; border-right: 1px solid #292d36; }
+.inspector { border-right: 0; border-left: 1px solid #292d36; }
+h2 { margin: 0 0 14px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #8e95a3; }
+.empty { color: #666d79; font-size: 13px; padding: 18px 4px; }
+.center { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(300px, 1fr) 270px; }
+.viewer { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: #0c0e12; color: #aeb4c0; }
+.viewer small { color: #5e6572; }
+.timeline { border-top: 1px solid #292d36; background: #13151a; }
+.timeline-header { height: 36px; display: flex; justify-content: space-between; align-items: center; padding: 0 12px; color: #aeb4c0; border-bottom: 1px solid #292d36; font-size: 12px; }
+.track { height: 45px; display: flex; border-bottom: 1px solid #22262e; }
+.track b { width: 44px; display: grid; place-items: center; font-size: 11px; color: #737b89; border-right: 1px solid #292d36; }
+.track-content { flex: 1; margin: 8px 14px; border-radius: 3px; background: #272d38; }
+.property { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid #252932; font-size: 12px; }
+.property span:last-child { color: #aeb4c0; }
