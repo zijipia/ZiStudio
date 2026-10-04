@@ -2,9 +2,9 @@
 
 > This file is a compact, continuously updated overview of what has actually been implemented. `plan.md` remains the full roadmap.
 
-## Current milestone: Foundation Runtime & Web Editor Engine
+## Current milestone: Media Abstraction
 
-**Status:** Completed & Operational
+**Status:** In progress
 
 ### Implemented
 
@@ -17,24 +17,31 @@
 - [x] Rust core crate (`crates/core`) with serializable project schema
 - [x] Serializable project schema foundation & `.zproj` project format
 - [x] Persistent project serialization & deserialization (`.zproj` file export & import)
-- [x] Command & Undo/Redo infrastructure (`CommandManager`, `SetPropertyValueCommand`, `AddKeyframeCommand`, `DeleteKeyframeCommand`, `AddLayerCommand`, `DeleteLayerCommand`, `SplitLayerCommand`, `MoveLayerTimingCommand`, `AddEffectCommand`, `DeleteEffectCommand`, Ctrl+Z / Ctrl+Y)
-- [x] Property & Keyframe animation evaluator (`animation.ts` supporting scalar & vector `[x,y,z]` evaluation, Bezier cubic curves, Ease In, Ease Out, Ease In/Out, Linear, Hold)
-- [x] Real-time Canvas / GPU viewport renderer (`CompositionRenderer` with layer transformation, anchor points, blend modes, filters, checkerboard background, interactive transform gizmo & safe-area guides)
-- [x] Real video/motion graphics playback transport (60 FPS playback clock, play/pause, step frame backward/forward, loop toggle, SMPTE timecode `HH:MM:SS:FF`)
-- [x] Interactive multi-track timeline (layer creation for Solid, Text, Shape, Audio, Adjustment; clip dragging & left/right trim handles; split clip at playhead; duplicate clip; keyframe diamond markers)
-- [x] Graph Editor (`GraphEditor.tsx`) for visual curve inspection, value/time grids, keyframe handles, and interpolation selection
-- [x] VFX Effects Engine (Gaussian Blur, Brightness & Contrast, Hue & Saturation, Glow, Vignette, Invert)
-- [x] Inspector panel with transform numeric controls, sliders, keyframe toggle diamonds, blend mode selection, and effect parameter sliders
-- [x] Audio engine abstraction (`audio.ts` with Web Audio API, volume, mute toggle, and waveform visualization)
-- [x] Export pipeline (PNG single-frame export + real-time Canvas WebM video recording)
+- [x] Command & Undo/Redo infrastructure
+- [x] Property & Keyframe animation evaluator
+- [x] Canvas composition renderer and editor viewport
+- [x] Playback transport and SMPTE timecode
+- [x] Interactive multi-track timeline
+- [x] Graph Editor
+- [x] Initial VFX effects engine
+- [x] Inspector controls and animated properties
+- [x] Web Audio abstraction
+- [x] PNG/WebM export
+- [x] Browser media backend abstraction (`apps/studio-web/src/media.ts`)
+- [x] Browser media source lifecycle: load, metadata probe, seek, frame acquisition and disposal
+- [x] AbortSignal-aware browser media loading
+- [x] Native Rust media crate boundary (`crates/media`)
+- [x] Shared native `MediaBackend`, `MediaSource`, `MediaFrame` and metadata/error contracts
 
 ### In progress / Next milestones
 
-- [ ] WebCodecs hardware accelerated decoding for large external video files
-- [ ] wgpu native desktop pipeline bindings
-- [ ] GStreamer native desktop pipeline
-- [ ] GPAC native container muxer/demuxer
-- [ ] Advanced 3D WebGL/WebGPU mesh viewport
+- [ ] Connect imported video/image assets to the composition renderer
+- [ ] WebCodecs backend for hardware-accelerated video decode
+- [ ] Frame scheduling and decoded-frame cache
+- [ ] wgpu native renderer crate
+- [ ] GStreamer native media backend
+- [ ] GPAC native container/muxer integration
+- [ ] Advanced 3D WebGPU viewport
 - [ ] GPU compute particle simulation
 - [ ] Node compositor view
 - [ ] Optical-flow / planar tracking engine
