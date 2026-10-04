@@ -5,7 +5,8 @@
   "packageManager": "pnpm@10.15.0",
   "scripts": {
     "dev": "pnpm --filter @zistudio/web dev",
-    "build": "pnpm --recursive build",
-    "typecheck": "pnpm --recursive typecheck"
+    "build": "pnpm --filter @zistudio/web build",
+    "preview": "pnpm --filter @zistudio/web preview",
+    "typecheck": "pnpm --filter @zistudio/web typecheck"
   }
 }
