@@ -1,0 +1,11 @@
+[package]
+name = "zistudio-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+thiserror = "2"
