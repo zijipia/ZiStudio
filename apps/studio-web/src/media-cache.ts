@@ -26,6 +26,24 @@ export class MediaFrameCache {
     return frame;
   }
 
+  getNearest(time: number, tolerance: number): MediaFrame | undefined {
+    let nearest: MediaFrame | undefined;
+    let distance = Number.POSITIVE_INFINITY;
+
+    for (const frame of this.frames.values()) {
+      const candidateDistance = Math.abs(frame.timestamp - time);
+      if (candidateDistance <= tolerance && candidateDistance < distance) {
+        nearest = frame;
+        distance = candidateDistance;
+      }
+    }
+
+    if (!nearest) return undefined;
+    this.frames.delete(nearest.timestamp);
+    this.frames.set(nearest.timestamp, nearest);
+    return nearest;
+  }
+
   set(time: number, frame: MediaFrame): void {
     const previous = this.frames.get(time);
     if (previous && previous !== frame) previous.close();
