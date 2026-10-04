@@ -2,11 +2,14 @@
   "name": "zistudio",
   "private": true,
   "version": "0.1.0",
-  "packageManager": "pnpm@10.15.0",
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "pnpm --filter @zistudio/web dev",
-    "build": "pnpm --filter @zistudio/web build",
-    "preview": "pnpm --filter @zistudio/web preview",
-    "typecheck": "pnpm --filter @zistudio/web typecheck"
+    "dev": "npm run dev --workspace=apps/studio-web",
+    "build": "npm run build --workspace=apps/studio-web",
+    "preview": "npm run preview --workspace=apps/studio-web",
+    "typecheck": "npm run typecheck --workspace=apps/studio-web",
+    "lint": "npm run typecheck --workspace=apps/studio-web"
   }
 }

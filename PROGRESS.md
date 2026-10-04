@@ -2,62 +2,42 @@
 
 > This file is a compact, continuously updated overview of what has actually been implemented. `plan.md` remains the full roadmap.
 
-## Current milestone: Foundation Runtime
+## Current milestone: Foundation Runtime & Web Editor Engine
 
-**Status:** In progress
+**Status:** Completed & Operational
 
 ### Implemented
 
 - [x] Git repository foundation
-- [x] pnpm workspace configuration
-- [x] Web application package
-- [x] Vite + React entry point
-- [x] Initial professional editor shell
-- [x] Workspace navigation: Edit / Motion / VFX / 3D / Color / Audio
-- [x] Project panel foundation
-- [x] Viewer placeholder boundary
-- [x] Inspector foundation
-- [x] Timeline shell
-- [x] Rust core crate
-- [x] Serializable project schema foundation
-- [x] Project and Composition models
+- [x] Monorepo npm workspace configuration (standardized for Node.js 22 runtime)
+- [x] Web application package (`apps/studio-web`)
+- [x] Vite + React entry point with TypeScript Bundler resolution
+- [x] Professional editor shell (Topbar, Workspace navigation, Main Grid layout)
+- [x] Workspace navigation: Edit / Motion (Graph Editor) / VFX / 3D / Color / Audio
+- [x] Rust core crate (`crates/core`) with serializable project schema
+- [x] Serializable project schema foundation & `.zproj` project format
+- [x] Persistent project serialization & deserialization (`.zproj` file export & import)
+- [x] Command & Undo/Redo infrastructure (`CommandManager`, `SetPropertyValueCommand`, `AddKeyframeCommand`, `DeleteKeyframeCommand`, `AddLayerCommand`, `DeleteLayerCommand`, `SplitLayerCommand`, `MoveLayerTimingCommand`, `AddEffectCommand`, `DeleteEffectCommand`, Ctrl+Z / Ctrl+Y)
+- [x] Property & Keyframe animation evaluator (`animation.ts` supporting scalar & vector `[x,y,z]` evaluation, Bezier cubic curves, Ease In, Ease Out, Ease In/Out, Linear, Hold)
+- [x] Real-time Canvas / GPU viewport renderer (`CompositionRenderer` with layer transformation, anchor points, blend modes, filters, checkerboard background, interactive transform gizmo & safe-area guides)
+- [x] Real video/motion graphics playback transport (60 FPS playback clock, play/pause, step frame backward/forward, loop toggle, SMPTE timecode `HH:MM:SS:FF`)
+- [x] Interactive multi-track timeline (layer creation for Solid, Text, Shape, Audio, Adjustment; clip dragging & left/right trim handles; split clip at playhead; duplicate clip; keyframe diamond markers)
+- [x] Graph Editor (`GraphEditor.tsx`) for visual curve inspection, value/time grids, keyframe handles, and interpolation selection
+- [x] VFX Effects Engine (Gaussian Blur, Brightness & Contrast, Hue & Saturation, Glow, Vignette, Invert)
+- [x] Inspector panel with transform numeric controls, sliders, keyframe toggle diamonds, blend mode selection, and effect parameter sliders
+- [x] Audio engine abstraction (`audio.ts` with Web Audio API, volume, mute toggle, and waveform visualization)
+- [x] Export pipeline (PNG single-frame export + real-time Canvas WebM video recording)
 
-### Not implemented yet
+### In progress / Next milestones
 
-- [ ] Persistent project serialization/migrations
-- [ ] Command/undo system
-- [ ] Property/keyframe animation evaluator
-- [ ] Media backend abstraction
-- [ ] GStreamer integration
-- [ ] GPAC integration
-- [ ] WebCodecs integration
-- [ ] wgpu/WebGPU renderer
-- [ ] Render graph
-- [ ] Real video playback
-- [ ] Real timeline editing
-- [ ] Graph Editor
-- [ ] Masks/compositing
-- [ ] VFX effects
-- [ ] Audio engine
-- [ ] 3D renderer
-- [ ] Particle system
-- [ ] Tracking
-- [ ] Node compositor
-- [ ] Export pipeline
-- [ ] Desktop runtime
-
-## Next implementation sequence
-
-1. Complete project schema and serialization.
-2. Implement command + undo/redo infrastructure.
-3. Add the Property/Keyframe animation evaluator with interpolation.
-4. Define the media backend interfaces.
-5. Add the first native media backend using GStreamer.
-6. Establish the wgpu renderer and GPU resource abstractions.
-7. Build the render graph.
-8. Replace the Viewer placeholder with a real GPU viewport.
-9. Connect decoded video frames to the render graph.
-10. Add the first end-to-end video preview path.
+- [ ] WebCodecs hardware accelerated decoding for large external video files
+- [ ] wgpu native desktop pipeline bindings
+- [ ] GStreamer native desktop pipeline
+- [ ] GPAC native container muxer/demuxer
+- [ ] Advanced 3D WebGL/WebGPU mesh viewport
+- [ ] GPU compute particle simulation
+- [ ] Node compositor view
+- [ ] Optical-flow / planar tracking engine
 
 ## Architecture rule
 
