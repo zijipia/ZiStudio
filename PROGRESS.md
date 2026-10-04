@@ -2,7 +2,7 @@
 
 > This file is a compact, continuously updated overview of what has actually been implemented. `plan.md` remains the full roadmap.
 
-## Current milestone: Media Abstraction
+## Current milestone: Media Runtime
 
 **Status:** In progress
 
@@ -32,15 +32,20 @@
 - [x] AbortSignal-aware browser media loading
 - [x] Native Rust media crate boundary (`crates/media`)
 - [x] Shared native `MediaBackend`, `MediaSource`, `MediaFrame` and metadata/error contracts
+- [x] Bounded LRU decoded-frame cache with explicit `VideoFrame.close()` ownership
+- [x] Timeline-aware media frame scheduler with stale-request suppression
+- [x] WebCodecs capability detection
+- [x] WebCodecs video decoder boundary for encoded chunks
 
 ### In progress / Next milestones
 
 - [ ] Connect imported video/image assets to the composition renderer
-- [ ] WebCodecs backend for hardware-accelerated video decode
-- [ ] Frame scheduling and decoded-frame cache
+- [ ] Container demuxing for WebCodecs input (GPAC-WASM or browser demuxer)
+- [ ] Decode scheduler prefetch and playback integration
 - [ ] wgpu native renderer crate
 - [ ] GStreamer native media backend
 - [ ] GPAC native container/muxer integration
+- [ ] GPU frame upload / zero-copy paths
 - [ ] Advanced 3D WebGPU viewport
 - [ ] GPU compute particle simulation
 - [ ] Node compositor view
