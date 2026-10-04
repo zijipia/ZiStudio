@@ -1,0 +1,9 @@
+[package]
+name = "zistudio-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Shared project and animation foundation for ZiStudio"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
