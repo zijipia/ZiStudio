@@ -22,7 +22,7 @@ export class MediaFrameScheduler {
   }
 
   async getFrame(source: MediaSource, time: number, signal?: AbortSignal): Promise<MediaFrame | null> {
-    const cached = this.findNearest(time);
+    const cached = this.cache.getNearest(time, this.tolerance);
     if (cached) return cached;
 
     const requestId = ++this.requestId;
@@ -46,32 +46,5 @@ export class MediaFrameScheduler {
   clear(): void {
     this.cancelPending();
     this.cache.clear();
-  }
-
-  private findNearest(time: number): MediaFrame | null {
-    let nearest: MediaFrame | null = null;
-    let distance = Number.POSITIVE_INFINITY;
-
-    for (const candidateTime of this.cacheTimes()) {
-      const candidate = this.cache.get(candidateTime);
-      if (!candidate) continue;
-      const candidateDistance = Math.abs(candidate.timestamp - time);
-      if (candidateDistance <= this.tolerance && candidateDistance < distance) {
-        nearest = candidate;
-        distance = candidateDistance;
-      }
-    }
-
-    return nearest;
-  }
-
-  private *cacheTimes(): Iterable<number> {
-    // MediaFrameCache intentionally exposes only ownership-safe operations;
-    // this helper uses a snapshot generated from the cache's public size API
-    // in future revisions when indexed lookup is added.
-    // For now the scheduler asks the exact timestamp first, which is the
-    // dominant playback path.
-    void this.cache.size;
-    return;
   }
 }
