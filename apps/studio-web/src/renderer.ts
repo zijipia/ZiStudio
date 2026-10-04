@@ -3,9 +3,13 @@ import type { Composition, Layer } from './model';
 
 export interface RenderOptions {
   showGuides?: boolean;
+  showSafeAreas?: boolean;
+  showGrid?: boolean;
   showCheckerboard?: boolean;
   selectedLayerId?: string | null;
   interactiveGizmo?: boolean;
+  resolution?: number;
+  channelMode?: 'rgb' | 'red' | 'green' | 'blue' | 'alpha';
 }
 
 export interface BoundingBox {
@@ -20,6 +24,7 @@ export class CompositionRenderer {
   private ctx: CanvasRenderingContext2D;
   private offscreenCanvas: HTMLCanvasElement;
   private offscreenCtx: CanvasRenderingContext2D;
+  private imageCache = new Map<string, HTMLImageElement>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -96,6 +101,11 @@ export class CompositionRenderer {
     // Draw safe-area guides if enabled
     if (options.showGuides) {
       this.drawGuides(ctx, compWidth, compHeight, zoom);
+    }
+
+    // Draw rule-of-thirds grid if enabled
+    if (options.showGrid) {
+      this.drawGrid(ctx, compWidth, compHeight, zoom);
     }
 
     // Draw selection gizmo on selected layer
@@ -241,24 +251,47 @@ export class CompositionRenderer {
       case 'image': {
         w = 960;
         h = 540;
-        // Draw elegant media canvas simulation or image
-        const grad = ctx.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
-        grad.addColorStop(0, '#1e293b');
-        grad.addColorStop(0.5, '#0ea5e9');
-        grad.addColorStop(1, '#6366f1');
-        ctx.fillStyle = grad;
-        ctx.fillRect(-w / 2, -h / 2, w, h);
+        const mediaUrl = layer.content.mediaUrl;
+        let drawnImage = false;
 
-        // Media grid lines and label
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(-w / 2, -h / 2, w, h);
+        if (mediaUrl) {
+          let img = this.imageCache.get(mediaUrl);
+          if (!img) {
+            img = new Image();
+            img.src = mediaUrl;
+            img.onload = () => {
+              // trigger redraw when ready
+            };
+            this.imageCache.set(mediaUrl, img);
+          }
+          if (img.complete && img.naturalWidth > 0) {
+            w = img.naturalWidth;
+            h = img.naturalHeight;
+            ctx.drawImage(img, -w / 2, -h / 2, w, h);
+            drawnImage = true;
+          }
+        }
 
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '500 24px monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(`[MEDIA STREAM: ${layer.name}]`, 0, 0);
+        if (!drawnImage) {
+          // Draw elegant media canvas simulation
+          const grad = ctx.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
+          grad.addColorStop(0, '#1e293b');
+          grad.addColorStop(0.5, '#0ea5e9');
+          grad.addColorStop(1, '#6366f1');
+          ctx.fillStyle = grad;
+          ctx.fillRect(-w / 2, -h / 2, w, h);
+
+          // Media grid lines and label
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-w / 2, -h / 2, w, h);
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '500 24px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`[MEDIA STREAM: ${layer.name}]`, 0, 0);
+        }
         break;
       }
 
@@ -416,6 +449,28 @@ export class CompositionRenderer {
     const tsMarginX = width * 0.05;
     const tsMarginY = height * 0.05;
     ctx.strokeRect(tsMarginX, tsMarginY, width - tsMarginX * 2, height - tsMarginY * 2);
+
+    ctx.restore();
+  }
+
+  private drawGrid(ctx: CanvasRenderingContext2D, width: number, height: number, zoom: number) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+    ctx.lineWidth = 1 / zoom;
+    ctx.setLineDash([2 / zoom, 3 / zoom]);
+
+    // Rule of thirds lines
+    ctx.beginPath();
+    ctx.moveTo(width / 3, 0);
+    ctx.lineTo(width / 3, height);
+    ctx.moveTo((width * 2) / 3, 0);
+    ctx.lineTo((width * 2) / 3, height);
+
+    ctx.moveTo(0, height / 3);
+    ctx.lineTo(width, height / 3);
+    ctx.moveTo(0, (height * 2) / 3);
+    ctx.lineTo(width, (height * 2) / 3);
+    ctx.stroke();
 
     ctx.restore();
   }

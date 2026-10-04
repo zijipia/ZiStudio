@@ -90,6 +90,8 @@ export interface Layer {
   visible: boolean;
   locked: boolean;
   solo?: boolean;
+  is3D?: boolean;
+  parentId?: string | null;
 }
 
 export interface Composition {

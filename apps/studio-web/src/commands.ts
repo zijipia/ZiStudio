@@ -492,3 +492,231 @@ export class DeleteEffectCommand implements Command {
     return { ...state, project: { ...state.project, compositions } };
   }
 }
+
+export class ReorderLayerCommand implements Command {
+  label = 'Reorder Layer';
+  private fromIndex: number;
+  private toIndex: number;
+
+  constructor(fromIndex: number, toIndex: number) {
+    this.fromIndex = fromIndex;
+    this.toIndex = toIndex;
+  }
+
+  execute(state: EditorState): EditorState {
+    return this.reorder(state, this.fromIndex, this.toIndex);
+  }
+
+  undo(state: EditorState): EditorState {
+    return this.reorder(state, this.toIndex, this.fromIndex);
+  }
+
+  private reorder(state: EditorState, from: number, to: number): EditorState {
+    const comp = state.project.compositions.find((c) => c.id === state.activeCompositionId);
+    if (!comp) return state;
+    if (from < 0 || from >= comp.layers.length || to < 0 || to >= comp.layers.length) return state;
+
+    const layers = [...comp.layers];
+    const [moved] = layers.splice(from, 1);
+    layers.splice(to, 0, moved);
+
+    const compositions = state.project.compositions.map((c) =>
+      c.id === comp.id ? { ...c, layers } : c
+    );
+
+    return { ...state, project: { ...state.project, compositions } };
+  }
+}
+
+export class UpdateLayerPropertiesCommand implements Command {
+  label = 'Update Layer';
+  private layerId: string;
+  private prevUpdates: Partial<Layer>;
+  private nextUpdates: Partial<Layer>;
+
+  constructor(layerId: string, prevUpdates: Partial<Layer>, nextUpdates: Partial<Layer>) {
+    this.layerId = layerId;
+    this.prevUpdates = JSON.parse(JSON.stringify(prevUpdates));
+    this.nextUpdates = JSON.parse(JSON.stringify(nextUpdates));
+  }
+
+  execute(state: EditorState): EditorState {
+    return this.apply(state, this.nextUpdates);
+  }
+
+  undo(state: EditorState): EditorState {
+    return this.apply(state, this.prevUpdates);
+  }
+
+  private apply(state: EditorState, updates: Partial<Layer>): EditorState {
+    const comp = state.project.compositions.find((c) => c.id === state.activeCompositionId);
+    if (!comp) return state;
+
+    const layers = comp.layers.map((l) => (l.id === this.layerId ? { ...l, ...updates } : l));
+    const compositions = state.project.compositions.map((c) =>
+      c.id === comp.id ? { ...c, layers } : c
+    );
+
+    return { ...state, project: { ...state.project, compositions } };
+  }
+}
+
+export class UpdateKeyframeInterpolationCommand implements Command {
+  label = 'Change Interpolation';
+  private layerId: string;
+  private propertyPath: 'position' | 'scale' | 'rotation' | 'opacity';
+  private keyframeId: string;
+  private prevInterp: Keyframe['interpolation'];
+  private nextInterp: Keyframe['interpolation'];
+
+  constructor(
+    layerId: string,
+    propertyPath: 'position' | 'scale' | 'rotation' | 'opacity',
+    keyframeId: string,
+    prevInterp: Keyframe['interpolation'],
+    nextInterp: Keyframe['interpolation']
+  ) {
+    this.layerId = layerId;
+    this.propertyPath = propertyPath;
+    this.keyframeId = keyframeId;
+    this.prevInterp = prevInterp;
+    this.nextInterp = nextInterp;
+  }
+
+  execute(state: EditorState): EditorState {
+    return this.setInterp(state, this.nextInterp);
+  }
+
+  undo(state: EditorState): EditorState {
+    return this.setInterp(state, this.prevInterp);
+  }
+
+  private setInterp(state: EditorState, interp: Keyframe['interpolation']): EditorState {
+    const comp = state.project.compositions.find((c) => c.id === state.activeCompositionId);
+    if (!comp) return state;
+
+    const layers = comp.layers.map((l) => {
+      if (l.id !== this.layerId) return l;
+      const transform = { ...l.transform };
+      const prop = (transform as any)[this.propertyPath];
+      const keyframes = prop.keyframes.map((k: Keyframe) =>
+        k.id === this.keyframeId ? { ...k, interpolation: interp } : k
+      );
+      (transform as any)[this.propertyPath] = { ...prop, keyframes };
+      return { ...l, transform };
+    });
+
+    const compositions = state.project.compositions.map((c) =>
+      c.id === comp.id ? { ...c, layers } : c
+    );
+
+    return { ...state, project: { ...state.project, compositions } };
+  }
+}
+
+export class MoveKeyframeCommand implements Command {
+  label = 'Move Keyframe';
+  private layerId: string;
+  private propertyPath: 'position' | 'scale' | 'rotation' | 'opacity';
+  private keyframeId: string;
+  private prevTime: number;
+  private nextTime: number;
+
+  constructor(
+    layerId: string,
+    propertyPath: 'position' | 'scale' | 'rotation' | 'opacity',
+    keyframeId: string,
+    prevTime: number,
+    nextTime: number
+  ) {
+    this.layerId = layerId;
+    this.propertyPath = propertyPath;
+    this.keyframeId = keyframeId;
+    this.prevTime = prevTime;
+    this.nextTime = nextTime;
+  }
+
+  execute(state: EditorState): EditorState {
+    return this.setTime(state, this.nextTime);
+  }
+
+  undo(state: EditorState): EditorState {
+    return this.setTime(state, this.prevTime);
+  }
+
+  private setTime(state: EditorState, time: number): EditorState {
+    const comp = state.project.compositions.find((c) => c.id === state.activeCompositionId);
+    if (!comp) return state;
+
+    const layers = comp.layers.map((l) => {
+      if (l.id !== this.layerId) return l;
+      const transform = { ...l.transform };
+      const prop = (transform as any)[this.propertyPath];
+      const keyframes = prop.keyframes
+        .map((k: Keyframe) => (k.id === this.keyframeId ? { ...k, time } : k))
+        .sort((a: Keyframe, b: Keyframe) => a.time - b.time);
+      (transform as any)[this.propertyPath] = { ...prop, keyframes };
+      return { ...l, transform };
+    });
+
+    const compositions = state.project.compositions.map((c) =>
+      c.id === comp.id ? { ...c, layers } : c
+    );
+
+    return { ...state, project: { ...state.project, compositions } };
+  }
+}
+
+export class UpdateEffectPropertyCommand implements Command {
+  label = 'Update Effect';
+  private layerId: string;
+  private effectId: string;
+  private propKey: string;
+  private prevVal: any;
+  private nextVal: any;
+
+  constructor(layerId: string, effectId: string, propKey: string, prevVal: any, nextVal: any) {
+    this.layerId = layerId;
+    this.effectId = effectId;
+    this.propKey = propKey;
+    this.prevVal = prevVal;
+    this.nextVal = nextVal;
+  }
+
+  execute(state: EditorState): EditorState {
+    return this.applyVal(state, this.nextVal);
+  }
+
+  undo(state: EditorState): EditorState {
+    return this.applyVal(state, this.prevVal);
+  }
+
+  private applyVal(state: EditorState, val: any): EditorState {
+    const comp = state.project.compositions.find((c) => c.id === state.activeCompositionId);
+    if (!comp) return state;
+
+    const layers = comp.layers.map((l) => {
+      if (l.id !== this.layerId) return l;
+      const effects = l.effects.map((ef) => {
+        if (ef.id !== this.effectId) return ef;
+        const prop = ef.properties[this.propKey];
+        if (!prop) return ef;
+        return {
+          ...ef,
+          properties: {
+            ...ef.properties,
+            [this.propKey]: { ...prop, value: val },
+          },
+        };
+      });
+      return { ...l, effects };
+    });
+
+    const compositions = state.project.compositions.map((c) =>
+      c.id === comp.id ? { ...c, layers } : c
+    );
+
+    return { ...state, project: { ...state.project, compositions } };
+  }
+}
+
