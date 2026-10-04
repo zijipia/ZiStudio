@@ -1,0 +1,12 @@
+{
+  "name": "zistudio",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @zistudio/web dev",
+    "build": "pnpm --filter @zistudio/web build",
+    "preview": "pnpm --filter @zistudio/web preview",
+    "typecheck": "pnpm --filter @zistudio/web typecheck"
+  }
+}
