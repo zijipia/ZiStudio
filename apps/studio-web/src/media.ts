@@ -202,9 +202,3 @@ export function inferMediaKind(url: string): MediaKind {
   if (/\.(mp3|wav|ogg|aac|m4a|flac)$/.test(pathname)) return 'audio';
   return 'video';
 }
-
-export function createMediaBackend(): MediaBackend {
-  // Keep backend selection centralized. WebCodecs can replace/augment this backend
-  // without leaking browser-specific decoding decisions into the editor model.
-  return new BrowserMediaBackend();
-}

@@ -12,6 +12,7 @@ export interface EditorState {
   zoom: number; // Viewport zoom (1 = 100%)
   pan: [number, number]; // Viewport pan
   isPlaying: boolean;
+  isLooping: boolean;
   selectedPropertyKey?: string | null;
 }
 
@@ -24,6 +25,7 @@ export function createEditorState(project: Project): EditorState {
     zoom: 1,
     pan: [0, 0],
     isPlaying: false,
+    isLooping: true,
     selectedPropertyKey: 'position',
   };
 }
@@ -48,6 +50,8 @@ export class CommandManager {
 
   execute(command: Command, state: EditorState): EditorState {
     const nextState = command.execute(state);
+    // A command that changed nothing must not pollute the undo history.
+    if (nextState === state) return state;
     this.undoStack.push(command);
     if (this.undoStack.length > this.maxHistory) {
       this.undoStack.shift();

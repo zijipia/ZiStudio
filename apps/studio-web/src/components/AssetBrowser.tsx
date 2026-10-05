@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import type { Asset } from '../model';
+import { isAssetOffline, type Asset } from '../model';
 import { inferMediaKind, type MediaKind } from '../media';
 
 interface AssetBrowserProps {
@@ -7,6 +7,7 @@ interface AssetBrowserProps {
   onImportClick: () => void;
   onAddAssetToComposition: (asset: Asset) => void;
   onDeleteAsset?: (assetId: string) => void;
+  onRelinkAsset?: (assetId: string) => void;
 }
 
 export const AssetBrowser: React.FC<AssetBrowserProps> = ({
@@ -14,6 +15,7 @@ export const AssetBrowser: React.FC<AssetBrowserProps> = ({
   onImportClick,
   onAddAssetToComposition,
   onDeleteAsset,
+  onRelinkAsset,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -118,6 +120,7 @@ export const AssetBrowser: React.FC<AssetBrowserProps> = ({
                       <div className="asset-thumb-icon audio">🎵</div>
                     )}
                     <span className={`asset-kind-badge ${kind}`}>{kind}</span>
+                    {isAssetOffline(asset) && <span className="asset-offline-badge">OFFLINE</span>}
                   </div>
                   <div className="asset-info">
                     <span className="asset-name" title={asset.name}>
@@ -156,6 +159,7 @@ export const AssetBrowser: React.FC<AssetBrowserProps> = ({
                 >
                   <span className="row-name">
                     {kind === 'video' ? '🎬' : kind === 'image' ? '🖼️' : '🎵'} {asset.name}
+                    {isAssetOffline(asset) && <span className="asset-offline-badge inline">OFFLINE</span>}
                   </span>
                   <span className="row-type">{kind}</span>
                   <span className="row-dim">
@@ -177,6 +181,15 @@ export const AssetBrowser: React.FC<AssetBrowserProps> = ({
           <div className="asset-footer-name">
             <strong>{selectedAsset.name}</strong>
           </div>
+          {isAssetOffline(selectedAsset) && onRelinkAsset && (
+            <button
+              className="btn-add-layer"
+              onClick={() => onRelinkAsset(selectedAsset.id)}
+              title="Locate the original file for this asset"
+            >
+              🔗 Relink…
+            </button>
+          )}
           <button
             className="btn-add-layer"
             onClick={() => onAddAssetToComposition(selectedAsset)}

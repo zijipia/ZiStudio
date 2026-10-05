@@ -1,41 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { evaluateProperty } from './animation';
 import { audioEngine } from './audio';
-import {
-  AddEffectCommand,
-  AddKeyframeCommand,
-  AddLayerCommand,
-  Command,
-  DeleteEffectCommand,
-  DeleteKeyframeCommand,
-  DeleteLayerCommand,
-  MoveKeyframeCommand,
-  MoveLayerTimingCommand,
-  ReorderLayerCommand,
-  SetPropertyValueCommand,
-  SplitLayerCommand,
-  UpdateEffectPropertyCommand,
-  UpdateKeyframeInterpolationCommand,
-  UpdateLayerPropertiesCommand,
-} from './commands';
-import { CommandManager, createEditorState, EditorState, getActiveComposition } from './editor';
-import {
-  Asset,
-  BlendMode,
-  createComposition,
-  createEffect,
-  createProject,
-  createShapeLayer,
-  createSolidLayer,
-  createTextLayer,
-  deserializeProject,
-  EffectType,
-  Keyframe,
-  Layer,
-  LayerType,
-  Project,
-  serializeProject,
-} from './model';
+import { getActiveComposition } from './editor';
+import { createEffect, createProject, Asset, EffectType, Keyframe, Layer, LayerType } from './model';
+import { formatTimecode, frameIndex } from './runtime/playback-math';
+import type { TransformPath } from './runtime/animation-ops';
+import { useEditorRuntime } from './runtime/use-editor-runtime';
 import { supportsHardwareVideoDecode, supportsWebCodecs } from './webcodecs';
 
 import { TopMenuBar } from './components/TopMenuBar';
@@ -53,10 +22,13 @@ import { AudioMixerPanel } from './components/AudioMixerPanel';
 import { ColorScopesPanel } from './components/ColorScopesPanel';
 import './styles.css';
 
-const initialProject = createProject();
-
+/**
+ * App is UI composition + dependency wiring only.
+ * All editor logic lives in the EditorRuntime (see ./runtime).
+ */
 export function App() {
-  const [editorState, setEditorState] = useState<EditorState>(() => createEditorState(initialProject));
+  const { runtime, state: editorState } = useEditorRuntime(createProject);
+
   const [workspace, setWorkspace] = useState<'Edit' | 'Motion' | 'VFX' | '3D' | 'Color' | 'Audio'>('Edit');
   const [timelineMode, setTimelineMode] = useState<'timeline' | 'graph'>('timeline');
 
@@ -74,7 +46,6 @@ export function App() {
   // Timeline options
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [snappingEnabled, setSnappingEnabled] = useState(true);
-  const [isLooping, setIsLooping] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
 
   // Layout states
@@ -86,41 +57,18 @@ export function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
 
-  const commandManager = useMemo(() => new CommandManager(), []);
-  const animFrameRef = useRef<number | null>(null);
-  const lastPlayTimeRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
+  const relinkInputRef = useRef<HTMLInputElement>(null);
+  const relinkTargetRef = useRef<string | null>(null);
 
   const composition = getActiveComposition(editorState);
   const time = editorState.currentTime;
   const isPlaying = editorState.isPlaying;
-
-  // Selected layer
+  const isLooping = editorState.isLooping;
   const selectedLayer = composition.layers.find((l) => l.id === editorState.selectedLayerId) || null;
 
-  // Execute command helper
-  const executeCmd = useCallback(
-    (cmd: Command) => {
-      setEditorState((prev) => commandManager.execute(cmd, prev));
-    },
-    [commandManager]
-  );
-
-  // Undo / Redo helpers
-  const handleUndo = useCallback(() => {
-    if (commandManager.canUndo()) {
-      setEditorState((prev) => commandManager.undo(prev));
-    }
-  }, [commandManager]);
-
-  const handleRedo = useCallback(() => {
-    if (commandManager.canRedo()) {
-      setEditorState((prev) => commandManager.redo(prev));
-    }
-  }, [commandManager]);
-
-  // Audio tone playback
+  // Audio tone playback (placeholder synth until real audio decoding lands)
   useEffect(() => {
     if (isPlaying && !isMuted) {
       const activeAudio = composition.layers.find(
@@ -132,423 +80,112 @@ export function App() {
     }
   }, [isPlaying, isMuted, Math.floor(time * 8), composition.layers]);
 
-  // Animation playback loop
-  useEffect(() => {
-    if (!isPlaying) {
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
-        animFrameRef.current = null;
-      }
-      return;
-    }
+  // --- thin delegates to the runtime (stable identities) ---------------------
+  const handleUndo = useCallback(() => runtime.undo(), [runtime]);
+  const handleRedo = useCallback(() => runtime.redo(), [runtime]);
+  const handleStepFrame = useCallback((delta: number) => runtime.playback.stepFrames(delta), [runtime]);
+  const handleJumpToStart = useCallback(() => runtime.playback.jumpToStart(), [runtime]);
+  const handleJumpToEnd = useCallback(() => runtime.playback.jumpToEnd(), [runtime]);
 
-    lastPlayTimeRef.current = performance.now();
-
-    const loop = (now: number) => {
-      const dt = (now - lastPlayTimeRef.current) / 1000;
-      lastPlayTimeRef.current = now;
-
-      setEditorState((prev) => {
-        const comp = getActiveComposition(prev);
-        let nextTime = prev.currentTime + dt;
-        if (nextTime >= comp.duration) {
-          nextTime = isLooping ? 0 : comp.duration;
-          if (!isLooping) {
-            return { ...prev, currentTime: nextTime, isPlaying: false };
-          }
-        }
-        return { ...prev, currentTime: nextTime };
-      });
-
-      animFrameRef.current = requestAnimationFrame(loop);
-    };
-
-    animFrameRef.current = requestAnimationFrame(loop);
-    return () => {
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
-      }
-    };
-  }, [isPlaying, isLooping]);
-
-  // Step frame helper
-  const handleStepFrame = useCallback(
-    (delta: number) => {
-      setEditorState((prev) => {
-        const comp = getActiveComposition(prev);
-        const nextTime = Math.max(0, Math.min(comp.duration, prev.currentTime + delta / comp.fps));
-        return { ...prev, currentTime: nextTime };
-      });
-    },
-    []
-  );
-
-  // Jump helpers
-  const handleJumpToStart = useCallback(() => {
-    setEditorState((prev) => ({ ...prev, currentTime: 0 }));
-  }, []);
-
-  const handleJumpToEnd = useCallback(() => {
-    setEditorState((prev) => {
-      const comp = getActiveComposition(prev);
-      return { ...prev, currentTime: comp.duration };
-    });
-  }, []);
-
-  // Layer creation
-  const handleAddLayer = useCallback(
-    (type: LayerType) => {
-      let layer: Layer;
-      const count = composition.layers.length + 1;
-      if (type === 'solid') {
-        const colors = ['#1e40af', '#065f46', '#991b1b', '#86198f', '#374151'];
-        layer = createSolidLayer(`Solid ${count}`, colors[count % colors.length]);
-      } else if (type === 'text') {
-        layer = createTextLayer(`Text ${count}`, 0, 0);
-      } else if (type === 'shape') {
-        layer = createShapeLayer(`Shape ${count}`, 'circle');
-      } else if (type === 'audio') {
-        layer = {
-          id: crypto.randomUUID(),
-          name: `Audio Track ${count}`,
-          type: 'audio',
-          start: 0,
-          duration: composition.duration,
-          transform: createSolidLayer('temp', '#000').transform,
-          blendMode: 'source-over',
-          effects: [],
-          content: { audioFreq: 440 + count * 40 },
-          visible: true,
-          locked: false,
-        };
-      } else {
-        layer = createSolidLayer(`Adjustment ${count}`, 'transparent');
-        layer.type = 'adjustment';
-      }
-      executeCmd(new AddLayerCommand(layer, 0));
-    },
-    [composition.duration, composition.layers.length, executeCmd]
-  );
-
-  // Split selected layer
-  const handleSplitSelectedLayer = useCallback(() => {
-    if (!selectedLayer) return;
-    executeCmd(new SplitLayerCommand(selectedLayer.id, time));
-  }, [selectedLayer, time, executeCmd]);
-
-  // Duplicate selected layer
-  const handleDuplicateSelectedLayer = useCallback(() => {
-    if (!selectedLayer) return;
-    const duplicated: Layer = {
-      ...JSON.parse(JSON.stringify(selectedLayer)),
-      id: crypto.randomUUID(),
-      name: `${selectedLayer.name} (Copy)`,
-      start: Math.min(composition.duration - 0.5, selectedLayer.start + 0.2),
-    };
-    executeCmd(new AddLayerCommand(duplicated, 0));
-  }, [selectedLayer, composition.duration, executeCmd]);
-
-  // Delete selected layer
-  const handleDeleteSelectedLayer = useCallback(() => {
-    if (editorState.selectedLayerId) {
-      executeCmd(new DeleteLayerCommand(editorState.selectedLayerId));
-    }
-  }, [editorState.selectedLayerId, executeCmd]);
-
-  // Keyframe toggle
-  const handleToggleKeyframe = useCallback(
-    (propertyPath: 'position' | 'scale' | 'rotation' | 'opacity' = 'position') => {
-      if (!selectedLayer) return;
-      const prop = selectedLayer.transform[propertyPath];
-      const existing = prop.keyframes.find((k) => Math.abs(k.time - time) < 0.05);
-
-      if (existing) {
-        executeCmd(new DeleteKeyframeCommand(selectedLayer.id, propertyPath, existing.id));
-      } else {
-        const currentVal = evaluateProperty(prop as any, time);
-        const newKf: Keyframe<any> = {
-          id: crypto.randomUUID(),
-          time,
-          value: currentVal,
-          interpolation: 'bezier',
-        };
-        executeCmd(new AddKeyframeCommand(selectedLayer.id, propertyPath, newKf));
-      }
-    },
-    [selectedLayer, time, executeCmd]
-  );
-
-  // Navigate keyframes (prev/next)
-  const handleNavigateKeyframe = useCallback(
-    (propertyPath: 'position' | 'scale' | 'rotation' | 'opacity', direction: -1 | 1) => {
-      if (!selectedLayer) return;
-      const prop = selectedLayer.transform[propertyPath];
-      if (prop.keyframes.length === 0) return;
-
-      const sorted = [...prop.keyframes].sort((a, b) => a.time - b.time);
-      if (direction === -1) {
-        const prevKfs = sorted.filter((k) => k.time < time - 0.01);
-        if (prevKfs.length > 0) {
-          setEditorState((prev) => ({ ...prev, currentTime: prevKfs[prevKfs.length - 1].time }));
-        }
-      } else {
-        const nextKfs = sorted.filter((k) => k.time > time + 0.01);
-        if (nextKfs.length > 0) {
-          setEditorState((prev) => ({ ...prev, currentTime: nextKfs[0].time }));
-        }
-      }
-    },
-    [selectedLayer, time]
-  );
-
-  // Numeric property changes
-  const handleNumericPropertyChange = useCallback(
-    (
-      propertyPath: 'position' | 'scale' | 'rotation' | 'opacity',
-      axisIndex: number | null,
-      val: number
-    ) => {
-      if (!selectedLayer) return;
-      const prop = selectedLayer.transform[propertyPath];
-      let nextValue: any;
-
-      if (axisIndex !== null && Array.isArray(prop.value)) {
-        const copy = [...prop.value];
-        copy[axisIndex] = val;
-        nextValue = copy;
-      } else {
-        nextValue = val;
-      }
-
-      if (prop.keyframes.length > 0) {
-        const existing = prop.keyframes.find((k) => Math.abs(k.time - time) < 0.05);
-        const kf: Keyframe<any> = {
-          id: existing ? existing.id : crypto.randomUUID(),
-          time,
-          value: nextValue,
-          interpolation: existing ? existing.interpolation : 'bezier',
-        };
-        executeCmd(new AddKeyframeCommand(selectedLayer.id, propertyPath, kf));
-      } else {
-        executeCmd(
-          new SetPropertyValueCommand(selectedLayer.id, propertyPath, prop.value, nextValue)
-        );
-      }
-    },
-    [selectedLayer, time, executeCmd]
-  );
-
-  // Direct viewport translation of layer
-  const handleLayerTranslate = useCallback(
-    (dx: number, dy: number) => {
-      if (!selectedLayer) return;
-      const currentPos = evaluateProperty(selectedLayer.transform.position, time);
-      const curX = Array.isArray(currentPos) ? currentPos[0] : 0;
-      const curY = Array.isArray(currentPos) ? currentPos[1] : 0;
-      handleNumericPropertyChange('position', 0, Math.round(curX + dx));
-      handleNumericPropertyChange('position', 1, Math.round(curY + dy));
-    },
-    [selectedLayer, time, handleNumericPropertyChange]
-  );
-
-  // Effect management
-  const handleAddEffect = useCallback(
-    (type: EffectType) => {
-      if (!selectedLayer) return;
-      executeCmd(new AddEffectCommand(selectedLayer.id, createEffect(type)));
-    },
-    [selectedLayer, executeCmd]
-  );
-
-  const handleDeleteEffect = useCallback(
-    (effectId: string) => {
-      if (!selectedLayer) return;
-      executeCmd(new DeleteEffectCommand(selectedLayer.id, effectId));
-    },
-    [selectedLayer, executeCmd]
-  );
-
-  const handleToggleEffect = useCallback(
-    (effectId: string, enabled: boolean) => {
-      if (!selectedLayer) return;
-      const updatedEffects = selectedLayer.effects.map((e) =>
-        e.id === effectId ? { ...e, enabled } : e
-      );
-      executeCmd(
-        new UpdateLayerPropertiesCommand(selectedLayer.id, { effects: selectedLayer.effects }, { effects: updatedEffects })
-      );
-    },
-    [selectedLayer, executeCmd]
-  );
-
-  const handleUpdateEffectProp = useCallback(
-    (effectId: string, propKey: string, val: number) => {
-      if (!selectedLayer) return;
-      const effect = selectedLayer.effects.find((e) => e.id === effectId);
-      const prevVal = effect?.properties[propKey]?.value;
-      executeCmd(new UpdateEffectPropertyCommand(selectedLayer.id, effectId, propKey, prevVal, val));
-    },
-    [selectedLayer, executeCmd]
-  );
-
-  // Layer property updates
+  const handleAddLayer = useCallback((type: LayerType) => runtime.composition.addLayer(type), [runtime]);
+  const handleSplitSelectedLayer = useCallback(() => runtime.composition.splitSelected(), [runtime]);
+  const handleDuplicateSelectedLayer = useCallback(() => runtime.composition.duplicateSelected(), [runtime]);
+  const handleDeleteSelectedLayer = useCallback(() => runtime.composition.deleteSelected(), [runtime]);
   const handleUpdateLayerProps = useCallback(
-    (layerId: string, updates: Partial<Layer>) => {
-      const layer = composition.layers.find((l) => l.id === layerId);
-      if (!layer) return;
-      executeCmd(new UpdateLayerPropertiesCommand(layerId, layer, updates));
-    },
-    [composition.layers, executeCmd]
+    (layerId: string, updates: Partial<Layer>) => runtime.composition.updateLayer(layerId, updates),
+    [runtime]
   );
-
-  // Reorder layer
   const handleReorderLayer = useCallback(
-    (fromIndex: number, toIndex: number) => {
-      executeCmd(new ReorderLayerCommand(fromIndex, toIndex));
-    },
-    [executeCmd]
+    (from: number, to: number) => runtime.composition.reorder(from, to),
+    [runtime]
   );
-
-  // Add asset as layer
   const handleAddAssetToComposition = useCallback(
-    (asset: Asset) => {
-      const isImage = asset.type === 'image';
-      const isVideo = asset.type === 'video';
-      const isAudio = asset.type === 'audio';
-
-      const newLayer: Layer = {
-        id: crypto.randomUUID(),
-        name: asset.name,
-        type: isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'solid',
-        start: 0,
-        duration: asset.duration || composition.duration,
-        transform: createSolidLayer('temp', '#000').transform,
-        blendMode: 'source-over',
-        effects: [],
-        content: { mediaUrl: asset.url, assetId: asset.id },
-        visible: true,
-        locked: false,
-      };
-      executeCmd(new AddLayerCommand(newLayer, 0));
-    },
-    [composition.duration, executeCmd]
+    (asset: Asset) => runtime.composition.addAssetToComposition(asset),
+    [runtime]
   );
 
-  // Import custom media file
+  const handleToggleKeyframe = useCallback(
+    (path: TransformPath = 'position') => runtime.animation.toggleKeyframe(path),
+    [runtime]
+  );
+  const handleNavigateKeyframe = useCallback(
+    (path: TransformPath, direction: -1 | 1) => runtime.animation.navigateKeyframe(path, direction),
+    [runtime]
+  );
+  const handleNumericPropertyChange = useCallback(
+    (path: TransformPath, axisIndex: number | null, value: number) =>
+      runtime.animation.setTransformValue(path, axisIndex, value),
+    [runtime]
+  );
+  const handleLayerTranslate = useCallback(
+    (dx: number, dy: number) => runtime.animation.translateSelected(dx, dy),
+    [runtime]
+  );
+
+  const handleAddEffect = useCallback((type: EffectType) => runtime.composition.addEffect(type), [runtime]);
+  const handleDeleteEffect = useCallback((id: string) => runtime.composition.deleteEffect(id), [runtime]);
+  const handleToggleEffect = useCallback(
+    (id: string, enabled: boolean) => runtime.composition.toggleEffect(id, enabled),
+    [runtime]
+  );
+  const handleUpdateEffectProp = useCallback(
+    (id: string, key: string, value: number) => runtime.composition.updateEffectProperty(id, key, value),
+    [runtime]
+  );
+
+  // --- project / media / export ----------------------------------------------
   const handleImportMedia = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (!file) return;
-      const url = URL.createObjectURL(file);
-      const isImage = file.type.startsWith('image/');
-      const isAudio = file.type.startsWith('audio/');
-      const type = isImage ? 'image' : isAudio ? 'audio' : 'video';
-
-      const newAsset: Asset = {
-        id: crypto.randomUUID(),
-        name: file.name,
-        type,
-        url,
-      };
-
-      setEditorState((prev) => ({
-        ...prev,
-        project: {
-          ...prev.project,
-          assets: [newAsset, ...prev.project.assets],
-        },
-      }));
-
-      // Also create layer for instant preview
-      handleAddAssetToComposition(newAsset);
       e.target.value = '';
+      if (file) void runtime.composition.importFile(file);
     },
-    [handleAddAssetToComposition]
+    [runtime]
   );
 
-  // Save .zproj
-  const handleSaveProject = useCallback(() => {
-    const json = serializeProject(editorState.project);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${editorState.project.name.toLowerCase().replace(/\s+/g, '-')}.zproj`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [editorState.project]);
+  const handleRelinkPicked = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      const assetId = relinkTargetRef.current;
+      e.target.value = '';
+      relinkTargetRef.current = null;
+      if (!file || !assetId) return;
+      runtime.composition.relinkAsset(assetId, file).catch((err) => window.alert(String(err.message ?? err)));
+    },
+    [runtime]
+  );
 
-  // Open .zproj
-  const handleOpenProjectFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        const project = deserializeProject(text);
-        setEditorState(createEditorState(project));
-      } catch (err) {
-        console.error('Failed to load .zproj', err);
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  }, []);
+  const handleSaveProject = useCallback(() => runtime.exporter.saveProject(), [runtime]);
 
-  // Export current frame PNG
+  const handleOpenProjectFile = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      runtime.exporter.openProject(file).catch((err) => console.error('Failed to load .zproj', err));
+    },
+    [runtime]
+  );
+
+  const viewerCanvas = () => document.querySelector('.viewer-canvas') as HTMLCanvasElement | null;
+
   const handleExportPNG = useCallback(() => {
-    const canvas = document.querySelector('.viewer-canvas') as HTMLCanvasElement | null;
-    if (!canvas) return;
-    const link = document.createElement('a');
-    link.download = `zistudio-${composition.name.toLowerCase().replace(/\s+/g, '-')}-${time.toFixed(2)}s.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
-  }, [composition.name, time]);
+    const canvas = viewerCanvas();
+    if (canvas) runtime.exporter.exportPNG(canvas);
+  }, [runtime]);
 
-  // Real WebM Video Export using MediaRecorder
   const handleExportWebMVideo = useCallback(async () => {
-    const canvas = document.querySelector('.viewer-canvas') as HTMLCanvasElement | null;
-    if (!canvas) return;
     setIsExporting(true);
     setExportProgress(0);
-
     try {
-      const stream = canvas.captureStream(60);
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-      const chunks: BlobPart[] = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${composition.name.toLowerCase().replace(/\s+/g, '-')}.webm`;
-        a.click();
-        URL.revokeObjectURL(url);
-        setIsExporting(false);
-      };
-
-      recorder.start();
-
-      const totalFrames = Math.floor(composition.duration * 30);
-      for (let f = 0; f < totalFrames; f++) {
-        const renderTime = (f / totalFrames) * composition.duration;
-        setEditorState((prev) => ({ ...prev, currentTime: renderTime }));
-        setExportProgress(Math.round((f / totalFrames) * 100));
-        await new Promise((r) => setTimeout(r, 16));
-      }
-
-      recorder.stop();
+      await runtime.exporter.exportWebM({ onProgress: setExportProgress });
     } catch (err) {
       console.error('Video export error', err);
+      window.alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
       setIsExporting(false);
     }
-  }, [composition.name, composition.duration]);
+  }, [runtime]);
 
   // Keyboard navigation & global shortcuts
   useEffect(() => {
@@ -570,13 +207,13 @@ export function App() {
         setIsCommandPaletteOpen((prev) => !prev);
       } else if (e.code === 'Space') {
         e.preventDefault();
-        setEditorState((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
+        runtime.playback.toggle();
       } else if (e.key === 'j' || e.key === 'J') {
         e.preventDefault();
         handleStepFrame(-5);
       } else if (e.key === 'k' || e.key === 'K') {
         e.preventDefault();
-        setEditorState((prev) => ({ ...prev, isPlaying: false }));
+        runtime.playback.pause();
       } else if (e.key === 'l' || e.key === 'L') {
         e.preventDefault();
         handleStepFrame(5);
@@ -633,6 +270,7 @@ export function App() {
     handleSplitSelectedLayer,
     handleDeleteSelectedLayer,
     editorState.selectedLayerId,
+    runtime,
   ]);
 
   // Context menu actions
@@ -645,28 +283,20 @@ export function App() {
           id: 'split',
           label: 'Split at Playhead',
           shortcut: 'S',
-          action: () => executeCmd(new SplitLayerCommand(layer.id, time)),
+          action: () => runtime.composition.splitLayer(layer.id),
         },
         {
           id: 'duplicate',
           label: 'Duplicate Layer',
           shortcut: 'Ctrl+D',
-          action: () => {
-            const copy: Layer = {
-              ...JSON.parse(JSON.stringify(layer)),
-              id: crypto.randomUUID(),
-              name: `${layer.name} (Copy)`,
-              start: Math.min(composition.duration - 0.5, layer.start + 0.2),
-            };
-            executeCmd(new AddLayerCommand(copy, 0));
-          },
+          action: () => runtime.composition.duplicate(layer),
         },
         {
           id: 'delete',
           label: 'Delete Layer',
           shortcut: 'Del',
           danger: true,
-          action: () => executeCmd(new DeleteLayerCommand(layer.id)),
+          action: () => runtime.composition.deleteLayer(layer.id),
         },
         { id: 'sep1', label: '', separator: true },
         {
@@ -683,17 +313,17 @@ export function App() {
         {
           id: 'add-blur',
           label: 'Add Gaussian Blur',
-          action: () => executeCmd(new AddEffectCommand(layer.id, createEffect('blur'))),
+          action: () => runtime.composition.addEffect('blur', layer.id),
         },
         {
           id: 'add-glow',
           label: 'Add Glow',
-          action: () => executeCmd(new AddEffectCommand(layer.id, createEffect('glow'))),
+          action: () => runtime.composition.addEffect('glow', layer.id),
         },
         {
           id: 'add-vignette',
           label: 'Add Vignette',
-          action: () => executeCmd(new AddEffectCommand(layer.id, createEffect('vignette'))),
+          action: () => runtime.composition.addEffect('vignette', layer.id),
         },
       ],
     });
@@ -710,7 +340,7 @@ export function App() {
         {
           id: 'reset-pan',
           label: 'Reset Viewport Pan',
-          action: () => setEditorState((prev) => ({ ...prev, pan: [0, 0] })),
+          action: () => runtime.selection.setPan([0, 0]),
         },
         { id: 'sep1', label: '', separator: true },
         {
@@ -728,72 +358,25 @@ export function App() {
   };
 
   const openKeyframeContextMenu = (e: React.MouseEvent, layer: Layer, kf: Keyframe) => {
+    const interpolation = (id: string, label: string, value: Keyframe['interpolation']) => ({
+      id,
+      label,
+      action: () => runtime.animation.setInterpolation(layer, kf, value),
+    });
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
       items: [
-        {
-          id: 'bezier',
-          label: 'Interpolation: Bezier',
-          action: () =>
-            executeCmd(
-              new UpdateKeyframeInterpolationCommand(
-                layer.id,
-                'position',
-                kf.id,
-                kf.interpolation,
-                'bezier'
-              )
-            ),
-        },
-        {
-          id: 'linear',
-          label: 'Interpolation: Linear',
-          action: () =>
-            executeCmd(
-              new UpdateKeyframeInterpolationCommand(
-                layer.id,
-                'position',
-                kf.id,
-                kf.interpolation,
-                'linear'
-              )
-            ),
-        },
-        {
-          id: 'ease-in-out',
-          label: 'Interpolation: Ease In / Out',
-          action: () =>
-            executeCmd(
-              new UpdateKeyframeInterpolationCommand(
-                layer.id,
-                'position',
-                kf.id,
-                kf.interpolation,
-                'ease-in-out'
-              )
-            ),
-        },
-        {
-          id: 'hold',
-          label: 'Interpolation: Hold',
-          action: () =>
-            executeCmd(
-              new UpdateKeyframeInterpolationCommand(
-                layer.id,
-                'position',
-                kf.id,
-                kf.interpolation,
-                'hold'
-              )
-            ),
-        },
+        interpolation('bezier', 'Interpolation: Bezier', 'bezier'),
+        interpolation('linear', 'Interpolation: Linear', 'linear'),
+        interpolation('ease-in-out', 'Interpolation: Ease In / Out', 'ease-in-out'),
+        interpolation('hold', 'Interpolation: Hold', 'hold'),
         { id: 'sep1', label: '', separator: true },
         {
           id: 'del-kf',
           label: 'Delete Keyframe',
           danger: true,
-          action: () => executeCmd(new DeleteKeyframeCommand(layer.id, 'position', kf.id)),
+          action: () => runtime.animation.deleteKeyframe(layer, kf),
         },
       ],
     });
@@ -856,7 +439,7 @@ export function App() {
         category: 'Playback',
         title: 'Play / Pause Composition',
         shortcut: 'Space',
-        run: () => setEditorState((prev) => ({ ...prev, isPlaying: !prev.isPlaying })),
+        run: () => runtime.playback.toggle(),
       },
       {
         id: 'step-forward',
@@ -1039,20 +622,10 @@ export function App() {
     handleAddEffect,
   ]);
 
-  // SMPTE Timecode generator
-  const formattedTimecode = useMemo(() => {
-    const totalFrames = Math.floor(time * composition.fps);
-    const frames = totalFrames % composition.fps;
-    const totalSeconds = Math.floor(time);
-    const seconds = totalSeconds % 60;
-    const minutes = Math.floor(totalSeconds / 60) % 60;
-    const hours = Math.floor(totalSeconds / 3600);
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frames)}`;
-  }, [time, composition.fps]);
+  const formattedTimecode = useMemo(() => formatTimecode(time, composition.fps), [time, composition.fps]);
 
-  const currentFrame = Math.floor(time * composition.fps);
-  const totalFrames = Math.floor(composition.duration * composition.fps);
+  const currentFrame = frameIndex(time, composition.fps);
+  const totalFrames = frameIndex(composition.duration, composition.fps);
 
   // Left Panel tabs configuration based on active workspace
   const leftTabs = useMemo(() => {
@@ -1089,6 +662,13 @@ export function App() {
       />
       <input
         type="file"
+        ref={relinkInputRef}
+        onChange={handleRelinkPicked}
+        accept="image/*,video/*,audio/*"
+        style={{ display: 'none' }}
+      />
+      <input
+        type="file"
         ref={mediaInputRef}
         onChange={handleImportMedia}
         accept="image/*,video/*,audio/*"
@@ -1104,16 +684,16 @@ export function App() {
         isPlaying={isPlaying}
         isLooping={isLooping}
         isMuted={isMuted}
-        canUndo={commandManager.canUndo()}
-        canRedo={commandManager.canRedo()}
+        canUndo={runtime.commands.canUndo()}
+        canRedo={runtime.commands.canRedo()}
         showGuides={showGuides}
         showGrid={showGrid}
         workspace={workspace}
-        onPlayPause={() => setEditorState((prev) => ({ ...prev, isPlaying: !prev.isPlaying }))}
+        onPlayPause={() => runtime.playback.toggle()}
         onStepFrame={handleStepFrame}
         onJumpToStart={handleJumpToStart}
         onJumpToEnd={handleJumpToEnd}
-        onToggleLoop={() => setIsLooping((prev) => !prev)}
+        onToggleLoop={() => runtime.playback.toggleLoop()}
         onToggleMute={() => {
           const muted = audioEngine.toggleMute();
           setIsMuted(muted);
@@ -1123,7 +703,7 @@ export function App() {
         onToggleGuides={() => setShowGuides((prev) => !prev)}
         onToggleGrid={() => setShowGrid((prev) => !prev)}
         onFitZoom={() => setZoomLevel('fit')}
-        onResetPan={() => setEditorState((prev) => ({ ...prev, pan: [0, 0] }))}
+        onResetPan={() => runtime.selection.setPan([0, 0])}
         onSaveProject={handleSaveProject}
         onOpenProject={() => fileInputRef.current?.click()}
         onImportMedia={() => mediaInputRef.current?.click()}
@@ -1247,14 +827,10 @@ export function App() {
                 assets={editorState.project.assets}
                 onImportClick={() => mediaInputRef.current?.click()}
                 onAddAssetToComposition={handleAddAssetToComposition}
-                onDeleteAsset={(id) => {
-                  setEditorState((prev) => ({
-                    ...prev,
-                    project: {
-                      ...prev.project,
-                      assets: prev.project.assets.filter((a) => a.id !== id),
-                    },
-                  }));
+                onDeleteAsset={(id) => runtime.composition.removeAsset(id)}
+                onRelinkAsset={(id) => {
+                  relinkTargetRef.current = id;
+                  relinkInputRef.current?.click();
                 }}
               />
             )}
@@ -1263,7 +839,7 @@ export function App() {
               <LayerPanel
                 layers={composition.layers}
                 selectedLayerId={editorState.selectedLayerId}
-                onSelectLayer={(id) => setEditorState((prev) => ({ ...prev, selectedLayerId: id }))}
+                onSelectLayer={(id) => runtime.selection.selectLayer(id)}
                 onToggleVisibility={(id) => {
                   const l = composition.layers.find((item) => item.id === id);
                   if (l) handleUpdateLayerProps(id, { visible: !l.visible });
@@ -1286,7 +862,7 @@ export function App() {
                 onReorderLayer={handleReorderLayer}
                 onDuplicateLayer={handleDuplicateSelectedLayer}
                 onSplitLayer={handleSplitSelectedLayer}
-                onDeleteLayer={(id) => executeCmd(new DeleteLayerCommand(id))}
+                onDeleteLayer={(id) => runtime.composition.deleteLayer(id)}
                 onContextMenu={openLayerContextMenu}
               />
             )}
@@ -1304,6 +880,7 @@ export function App() {
         <section className="panel viewer-panel">
           <ViewerPanel
             composition={composition}
+            frameProvider={runtime.media}
             currentTime={time}
             selectedLayerId={editorState.selectedLayerId}
             pan={editorState.pan}
@@ -1319,7 +896,7 @@ export function App() {
             onChannelModeChange={setChannelMode}
             onToggleGuides={() => setShowGuides((prev) => !prev)}
             onToggleGrid={() => setShowGrid((prev) => !prev)}
-            onResetPan={() => setEditorState((prev) => ({ ...prev, pan: [0, 0] }))}
+            onResetPan={() => runtime.selection.setPan([0, 0])}
             onToggleMaximize={() =>
               setMaximizedPanel((prev) => (prev === 'viewer' ? null : 'viewer'))
             }
@@ -1352,7 +929,7 @@ export function App() {
                     const eff = createEffect('brightness-contrast');
                     eff.properties.brightness.value = b;
                     eff.properties.contrast.value = c;
-                    executeCmd(new AddEffectCommand(selectedLayer.id, eff));
+                    runtime.composition.addEffectInstance(eff);
                   }
                 }}
               />
@@ -1414,8 +991,8 @@ export function App() {
                 selectedLayerId={editorState.selectedLayerId}
                 timelineZoom={timelineZoom}
                 snappingEnabled={snappingEnabled}
-                onSeek={(targetTime) => setEditorState((prev) => ({ ...prev, currentTime: targetTime }))}
-                onSelectLayer={(id) => setEditorState((prev) => ({ ...prev, selectedLayerId: id }))}
+                onSeek={(targetTime) => runtime.playback.seek(targetTime)}
+                onSelectLayer={(id) => runtime.selection.selectLayer(id)}
                 onToggleVisibility={(id) => {
                   const l = composition.layers.find((item) => item.id === id);
                   if (l) handleUpdateLayerProps(id, { visible: !l.visible });
@@ -1429,7 +1006,7 @@ export function App() {
                   if (l) handleUpdateLayerProps(id, { solo: !l.solo });
                 }}
                 onMoveLayerTiming={(id, origStart, origDuration, newStart, newDuration) => {
-                  executeCmd(new MoveLayerTimingCommand(id, origStart, origDuration, newStart, newDuration));
+                  runtime.composition.setLayerTiming(id, origStart, origDuration, newStart, newDuration);
                 }}
                 onAddLayer={handleAddLayer}
                 onSplitLayer={handleSplitSelectedLayer}
@@ -1448,21 +1025,13 @@ export function App() {
                 selectedLayerId={editorState.selectedLayerId}
                 selectedPropertyKey={editorState.selectedPropertyKey || 'position'}
                 currentTime={time}
-                onSeek={(targetTime) => setEditorState((prev) => ({ ...prev, currentTime: targetTime }))}
-                onSelectPropertyKey={(key) =>
-                  setEditorState((prev) => ({ ...prev, selectedPropertyKey: key }))
-                }
+                onSeek={(targetTime) => runtime.playback.seek(targetTime)}
+                onSelectPropertyKey={(key) => runtime.selection.selectProperty(key)}
                 onUpdateKeyframeInterpolation={(kfId, interpolation) => {
                   if (!selectedLayer) return;
-                  executeCmd(
-                    new UpdateKeyframeInterpolationCommand(
-                      selectedLayer.id,
-                      (editorState.selectedPropertyKey || 'position') as any,
-                      kfId,
-                      'bezier',
-                      interpolation
-                    )
-                  );
+                  const path = (editorState.selectedPropertyKey || 'position') as TransformPath;
+                  const keyframe = selectedLayer.transform[path]?.keyframes.find((k) => k.id === kfId);
+                  if (keyframe) runtime.animation.setInterpolation(selectedLayer, keyframe, interpolation);
                 }}
                 onSwitchToTimeline={() => setTimelineMode('timeline')}
               />

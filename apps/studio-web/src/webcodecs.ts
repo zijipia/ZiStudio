@@ -32,27 +32,46 @@ export function supportsHardwareVideoDecode(): boolean {
  */
 export class WebCodecsVideoDecoder {
   private decoder: VideoDecoder | null = null;
+  private config: VideoDecoderConfigLike | null = null;
   private queue: DecodedVideoFrame[] = [];
   private failure: Error | null = null;
+  private waiters: Array<() => void> = [];
 
   configure(config: VideoDecoderConfigLike): void {
     if (!supportsWebCodecs()) throw new Error('WebCodecs VideoDecoder is unavailable.');
     this.close();
+    this.config = config;
+    this.createDecoder();
+  }
 
-    this.decoder = new VideoDecoder({
+  private createDecoder(): void {
+    const decoder = new VideoDecoder({
       output: (frame) => {
         this.queue.push({
           frame,
           timestamp: frame.timestamp ?? 0,
           close: () => frame.close(),
         });
+        this.wake();
       },
       error: (error) => {
         this.failure = error;
+        this.wake();
       },
     });
+    decoder.addEventListener('dequeue', () => this.wake());
+    decoder.configure(this.config as VideoDecoderConfig);
+    this.decoder = decoder;
+  }
 
-    this.decoder.configure(config as VideoDecoderConfig);
+  private wake(): void {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  get decodeQueueSize(): number {
+    return this.decoder?.decodeQueueSize ?? 0;
   }
 
   decode(chunk: EncodedVideoChunk): void {
@@ -61,8 +80,22 @@ export class WebCodecsVideoDecoder {
     this.decoder.decode(chunk);
   }
 
+  /** Resolve once the decoder reports progress (a dequeue or an output) or fails. */
+  waitForProgress(): Promise<void> {
+    if (this.failure) return Promise.reject(this.failure);
+    return new Promise<void>((resolve, reject) => {
+      this.waiters.push(() => (this.failure ? reject(this.failure) : resolve()));
+    });
+  }
+
   takeFrame(): DecodedVideoFrame | null {
     return this.queue.shift() ?? null;
+  }
+
+  takeAllFrames(): DecodedVideoFrame[] {
+    const frames = this.queue;
+    this.queue = [];
+    return frames;
   }
 
   async flush(): Promise<void> {
@@ -71,17 +104,26 @@ export class WebCodecsVideoDecoder {
     if (this.failure) throw this.failure;
   }
 
+  /**
+   * Drop all queued work and start over. A WebCodecs decoder that has been reset is
+   * unconfigured, so it is configured again here; the next chunk must be a key frame.
+   */
   reset(): void {
-    this.decoder?.reset();
-    this.failure = null;
     this.clearFrames();
+    this.failure = null;
+    if (!this.decoder || !this.config) return;
+    this.decoder.reset();
+    this.decoder.configure(this.config as VideoDecoderConfig);
+    this.wake();
   }
 
   close(): void {
-    this.decoder?.close();
+    if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
     this.decoder = null;
+    this.config = null;
     this.failure = null;
     this.clearFrames();
+    this.wake();
   }
 
   private clearFrames(): void {

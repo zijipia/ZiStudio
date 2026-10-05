@@ -1,5 +1,6 @@
 import { evaluateProperty, evaluateTransform } from './animation';
 import type { Composition, Layer } from './model';
+import type { FrameProvider } from './runtime/frame-provider';
 
 export interface RenderOptions {
   showGuides?: boolean;
@@ -10,6 +11,8 @@ export interface RenderOptions {
   interactiveGizmo?: boolean;
   resolution?: number;
   channelMode?: 'rgb' | 'red' | 'green' | 'blue' | 'alpha';
+  /** Render only the composition at 1:1 (no editor background, checkerboard, border, guides or gizmo). */
+  exportMode?: boolean;
 }
 
 export interface BoundingBox {
@@ -25,9 +28,11 @@ export class CompositionRenderer {
   private offscreenCanvas: HTMLCanvasElement;
   private offscreenCtx: CanvasRenderingContext2D;
   private imageCache = new Map<string, HTMLImageElement>();
+  private readonly frames: FrameProvider | null;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, frames: FrameProvider | null = null) {
     this.canvas = canvas;
+    this.frames = frames;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('Could not get 2D rendering context');
     this.ctx = ctx;
@@ -60,20 +65,23 @@ export class CompositionRenderer {
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Fill background with editor dark neutral
-    ctx.fillStyle = '#090b0e';
+    const exporting = options.exportMode === true;
+
+    // Fill background with editor dark neutral (export: opaque black, composition only)
+    ctx.fillStyle = exporting ? '#000000' : '#090b0e';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Calculate composition transform in viewport
-    const centerX = canvas.width / 2 + pan[0];
-    const centerY = canvas.height / 2 + pan[1];
+    const centerX = exporting ? compWidth / 2 : canvas.width / 2 + pan[0];
+    const centerY = exporting ? compHeight / 2 : canvas.height / 2 + pan[1];
+    if (exporting) zoom = 1;
 
     ctx.translate(centerX, centerY);
     ctx.scale(zoom, zoom);
     ctx.translate(-compWidth / 2, -compHeight / 2);
 
     // Draw checkerboard behind composition area
-    this.drawCheckerboard(ctx, compWidth, compHeight);
+    if (!exporting) this.drawCheckerboard(ctx, compWidth, compHeight);
 
     // Clear composition offscreen buffer
     oCtx.clearRect(0, 0, compWidth, compHeight);
@@ -92,6 +100,11 @@ export class CompositionRenderer {
 
     // Draw composition buffer to viewport canvas
     ctx.drawImage(this.offscreenCanvas, 0, 0);
+
+    if (exporting) {
+      ctx.restore();
+      return layerBoundsMap;
+    }
 
     // Draw composition outer border
     ctx.strokeStyle = '#384252';
@@ -251,47 +264,45 @@ export class CompositionRenderer {
       case 'image': {
         w = 960;
         h = 540;
-        const mediaUrl = layer.content.mediaUrl;
-        let drawnImage = false;
+        let drawn = false;
+        let status: string = 'none';
 
-        if (mediaUrl) {
-          let img = this.imageCache.get(mediaUrl);
-          if (!img) {
-            img = new Image();
-            img.src = mediaUrl;
-            img.onload = () => {
-              // trigger redraw when ready
-            };
-            this.imageCache.set(mediaUrl, img);
+        if (this.frames) {
+          // Real media path: frames come from the MediaController (decoded asynchronously).
+          const resolved = this.frames.resolve(layer, time);
+          status = resolved.status;
+          if (resolved.frame) {
+            w = resolved.frame.width;
+            h = resolved.frame.height;
+            ctx.drawImage(resolved.frame.source as CanvasImageSource, -w / 2, -h / 2, w, h);
+            drawn = true;
+          } else {
+            const dims = this.frames.getDimensions(layer);
+            if (dims) {
+              w = dims.width;
+              h = dims.height;
+            }
           }
-          if (img.complete && img.naturalWidth > 0) {
-            w = img.naturalWidth;
-            h = img.naturalHeight;
-            ctx.drawImage(img, -w / 2, -h / 2, w, h);
-            drawnImage = true;
+        } else {
+          // Legacy fallback (no provider): still images only.
+          const mediaUrl = layer.content.mediaUrl;
+          if (mediaUrl && layer.type === 'image') {
+            let img = this.imageCache.get(mediaUrl);
+            if (!img) {
+              img = new Image();
+              img.src = mediaUrl;
+              this.imageCache.set(mediaUrl, img);
+            }
+            if (img.complete && img.naturalWidth > 0) {
+              w = img.naturalWidth;
+              h = img.naturalHeight;
+              ctx.drawImage(img, -w / 2, -h / 2, w, h);
+              drawn = true;
+            }
           }
         }
 
-        if (!drawnImage) {
-          // Draw elegant media canvas simulation
-          const grad = ctx.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
-          grad.addColorStop(0, '#1e293b');
-          grad.addColorStop(0.5, '#0ea5e9');
-          grad.addColorStop(1, '#6366f1');
-          ctx.fillStyle = grad;
-          ctx.fillRect(-w / 2, -h / 2, w, h);
-
-          // Media grid lines and label
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(-w / 2, -h / 2, w, h);
-
-          ctx.fillStyle = '#ffffff';
-          ctx.font = '500 24px monospace';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(`[MEDIA STREAM: ${layer.name}]`, 0, 0);
-        }
+        if (!drawn) this.drawMediaPlaceholder(ctx, w, h, layer.name, status);
         break;
       }
 
@@ -349,6 +360,30 @@ export class CompositionRenderer {
     ctx.restore();
   }
 
+  private drawMediaPlaceholder(ctx: CanvasRenderingContext2D, w: number, h: number, name: string, status: string) {
+    const offline = status === 'error';
+    const grad = ctx.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
+    if (offline) {
+      grad.addColorStop(0, '#3f1d1d');
+      grad.addColorStop(1, '#7f1d1d');
+    } else {
+      grad.addColorStop(0, '#1e293b');
+      grad.addColorStop(0.5, '#0ea5e9');
+      grad.addColorStop(1, '#6366f1');
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-w / 2, -h / 2, w, h);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '500 24px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const label = offline ? 'MEDIA OFFLINE' : status === 'loading' ? 'LOADING MEDIA…' : 'MEDIA';
+    ctx.fillText(`[${label}: ${name}]`, 0, 0);
+  }
+
   private drawLayerGizmo(
     ctx: CanvasRenderingContext2D,
     layer: Layer,
@@ -373,8 +408,9 @@ export class CompositionRenderer {
       w = 320;
       h = 320;
     } else if (layer.type === 'video' || layer.type === 'image') {
-      w = 960;
-      h = 540;
+      const dims = this.frames?.getDimensions(layer);
+      w = dims?.width ?? 960;
+      h = dims?.height ?? 540;
     } else if (layer.type === 'text') {
       w = (layer.content.text?.length || 10) * 32;
       h = (layer.content.fontSize || 48) * 1.5;

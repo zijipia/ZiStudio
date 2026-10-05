@@ -2,9 +2,9 @@
 
 > This file is a compact, continuously updated overview of what has actually been implemented. `plan.md` remains the full roadmap.
 
-## Current milestone: Media Runtime
+## Current milestone: Media Runtime (M4: frame pipeline)
 
-**Status:** In progress
+**Status:** In progress. M0-M3 complete; next is M4 (decode prefetch + audio).
 
 ### Implemented
 
@@ -26,7 +26,8 @@
 - [x] Initial VFX effects engine
 - [x] Inspector controls and animated properties
 - [x] Web Audio abstraction
-- [x] PNG/WebM export
+- [x] PNG export
+- [x] Deterministic offline WebM export (composition-resolution render, WebCodecs `VideoEncoder` via mediabunny, exact frame count and duration)
 - [x] Browser media backend abstraction (`apps/studio-web/src/media.ts`)
 - [x] Browser media source lifecycle: load, metadata probe, seek, frame acquisition and disposal
 - [x] AbortSignal-aware browser media loading
@@ -51,10 +52,23 @@
 - [x] Color Scopes Panel with real-time RGB Parade and Luma Waveform scope simulation, and 3-way color grading controls (Lift, Gamma, Gain)
 - [x] Undoable commands: `ReorderLayerCommand`, `UpdateLayerPropertiesCommand`, `UpdateKeyframeInterpolationCommand`, `MoveKeyframeCommand`, `UpdateEffectPropertyCommand`
 
+- [x] **M0** Test harness: vitest, 56 tests covering animation, commands, media cache/scheduler, media controller, playback runtime
+- [x] **M1** Editor runtime refactor: `App.tsx` 1505 -> ~1050 lines, no editor logic left in it (`src/runtime/`)
+- [x] **M2** Real asset -> renderer path: `MediaController` -> per-source scheduler/cache -> `FrameProvider` -> `CompositionRenderer`
+- [x] Media in-point (`LayerContent.mediaInPoint`) maintained by split and left-trim commands
+- [x] **Project format v2**: `Asset.source` (embedded / file / remote), v1 -> v2 migration, session `blob:` URLs never written to `.zproj`
+- [x] Asset relink: offline assets are shown (`OFFLINE` badge, `MEDIA OFFLINE` in the viewer), manual `Relink...`, and automatic relink when a file with the same name and size is imported
+- [x] **M3** Real video pipeline: `Demuxer` interface (`src/demux/`) -> mediabunny demuxer -> WebCodecs decoder -> `WebCodecsMediaSource` (frame-accurate seek via key packet, forward decode without reset during playback) behind the existing `MediaBackend`
+- [x] `WebCodecsMediaBackend` falls back to the browser backend for images, audio, rotated video, unsupported codecs and unreadable containers
+- [x] Coverage-based frame selection in the cache (`getCovering`, `getAtOrBefore`) and a settle guard in `MediaController`
+
 ### In progress / Next milestones
 
-- [ ] Connect imported video/image assets to the composition renderer via MediaSource/MediaFrameScheduler
-- [ ] Container demuxing for WebCodecs input (GPAC-WASM or browser demuxer)
+- [x] Connect imported video/image assets to the composition renderer via `MediaController` (HTMLVideoElement backend)
+- [ ] GPAC-WASM `Demuxer` implementation (the interface exists; mediabunny is the first implementation)
+- [ ] **M4** Frame pipeline: prefetch ahead of the playhead (decode scheduler), `FrameCache` memory budget, proper A/V clock
+- [ ] Rest of the model upgrade: Asset proxy/interpretation/cache, Layer time-remap/parent/matte/masks, Composition render/color/audio settings (v2 -> v3 migration)
+- [ ] Audio decoding for imported audio (audio layers still play a synth tone)
 - [ ] Decode scheduler prefetch and playback integration
 - [ ] wgpu native renderer crate
 - [ ] GStreamer native media backend
@@ -66,6 +80,59 @@
 - [ ] Optical-flow / planar tracking engine
 
 ## Latest Implementation
+
+### Model v2 (asset identity + relink) and M3 (demux -> WebCodecs)
+- **Model**: `Project.version` is now 2. `Asset.source` says where the bytes live. `serializeProject` writes only what survives a reload (file assets are saved as a name/size/mtime fingerprint with an empty URL); `deserializeProject` migrates v1, rejects newer versions, and re-binds layer media URLs from their assets. Relinking (manual or by re-importing the same file) updates the asset and every layer that references it.
+- **Pipeline**: `Demuxer` (`demux/demuxer.ts`) -> `MediabunnyDemuxer` -> `WebCodecsPictureDecoder` (`webcodecs.ts`) -> `WebCodecsMediaSource` (`webcodecs-media.ts`). The source keeps a small window of decoded pictures: playback continues decoding forward; a backward or far-forward seek resets at the key packet; only the pictures it still needs stay alive. Everything is injectable, so the algorithm is tested with a fake demuxer and a fake decoder that simulates B-frame reordering.
+- **`WebCodecsVideoDecoder.reset()`** now reconfigures the decoder (a reset WebCodecs decoder is unconfigured), and exposes `waitForProgress()` / `takeAllFrames()`.
+- **Bugs found by testing the above and fixed**:
+  - The controller treated a cached frame as current only if its timestamp was within 1/48s of the wanted time. A frame-accurate source returns the frame that *covers* the time, which can start up to a full frame earlier, so the controller re-requested forever and froze the page. Selection is now coverage-based and a time that has already been decoded is never requested again.
+  - Container timestamps are quantized (Matroska: whole ms), so a request exactly on a frame boundary selected the previous frame. A shared 1 ms epsilon fixes this for WebM and MP4.
+  - The `F n/600` frame counter used `floor(t * fps)` and could show the previous frame (`4.9999` -> 4).
+- **Verified in headless Chromium** (videos whose picture encodes the frame index as black/white blocks, so lossy compression cannot blur the check):
+  - VP8/WebM and VP9/MP4, 40 positions each (single steps, forward jumps, backward jumps, return to start): **40/40 exact** on the WebCodecs path (`VideoDecoder.decode` calls observed).
+  - Continuous playback: 23 distinct frames in 1.5s at real 30fps speed, monotonic, no freeze.
+  - Offline export (uses the same decoder): 1920x1080, 600 frames, exactly 10.000s, 12/12 sampled frames decode to the correct source frame; 10.5s wall time (22.8s before).
+  - Save -> reload page -> open `.zproj` -> assets `OFFLINE` -> re-import same file -> relinked (no duplicate asset). Image import via the fallback backend.
+  - `npm run typecheck`, `npm test` (93 tests), `npm run build`: clean.
+- **Not verified**:
+  - H.264/HEVC/AAC. The headless Chromium used for testing has no proprietary codecs, so only VP8/VP9 ran end to end. H.264 depends on the avcC `description` supplied by the demuxer and on the browser's decoder; it is covered only by the unit-level fakes and the `isConfigSupported` fallback. Please try an H.264 MP4 in desktop Chrome.
+  - Audio from imported media is still not decoded (audio layers play a synth tone).
+  - `mediabunny` (MPL-2.0) was added as a dependency for demuxing and for WebM muxing in export.
+- **Next step**: M4, decode prefetch ahead of the playhead and a frame-cache memory budget, then audio decode and an A/V clock.
+
+## Previous Implementation
+
+### M0 + M1 + M2: Test harness, Editor Runtime, Real media in the viewer
+- **What changed**:
+  - `src/runtime/` introduced. Nothing in it (except `use-editor-runtime.ts`) imports React.
+    - `editor-runtime.ts`: owns `EditorState`, `CommandManager` and controllers; `useSyncExternalStore`-compatible (`getState` / `subscribe`). A no-op `update` does not notify.
+    - `playback-controller.ts`: rAF loop behind an injectable `FrameClock`; play/pause/seek/step/loop.
+    - `selection-controller.ts`, `animation-controller.ts` (`toggleKeyframe`, `setTransformValue`, `translateSelected`, `setInterpolation`, ...), `composition-controller.ts` (layers, effects, assets, import), `export-controller.ts`.
+    - Pure helpers: `playback-math.ts`, `animation-ops.ts`, `layer-factory.ts`, `media-time.ts`.
+    - `media-controller.ts` + `frame-provider.ts`: the renderer asks a synchronous `FrameProvider` for the best available frame; decoding is async, latest-wins per source, and subscribers are notified when a better frame lands.
+  - `App.tsx` is now UI composition + dependency wiring.
+  - `CompositionRenderer` takes an optional `FrameProvider`, draws real video/image frames at their native size, and shows `LOADING MEDIA` / `MEDIA OFFLINE` placeholders. `exportMode` renders only the composition at 1:1.
+  - Asset import now probes real width/height/duration through the media backend.
+- **Bugs fixed along the way**:
+  - Video layers were never drawn (the renderer loaded video URLs with `new Image()`); media stack was not wired in at all.
+  - `MediaFrameCache` is keyed by time only, so one shared scheduler would return another clip's frame; each source now has its own scheduler/cache.
+  - Split and left-trim did not advance the media in-point, so the clip would slide against its timing. Both now maintain `mediaInPoint` (undo restores it).
+  - `CommandManager` recorded commands that changed nothing (e.g. split outside the clip) into the undo history.
+  - Editing one axis of an animated property reset the other axes to the static base value instead of the value evaluated at the playhead.
+  - Viewport drag issued two commands (two undo steps) per move; it is now one.
+  - Timecode used `floor(t * fps)` and could read one frame early (`29.999...`); now epsilon-safe. Playing from the last frame with looping off restarts from 0.
+  - WebM export recorded the viewer canvas in real time: wrong resolution (panel size, with guides), and a 10s composition produced a 41.6s file. Now offline: 1920x1080, 600 frames, 10.000s, verified with ffprobe.
+- **Verified**:
+  - `npm run typecheck`: clean. `npm test`: 56 passed. `npm run build`: OK.
+  - Headless Chromium: imported a 640x360 VP8 clip; seeking to 0s / 0.33s / 0.83s showed burned-in frame numbers 0 / 10 / 25 (frame-accurate); 8 distinct frames during 1.4s of playback; split + undo; no console errors; exported file decoded frame 30 at 1s and frame 90 at 3s.
+- **Known limitations** (as of M2; the first two are resolved by the section above):
+  - `HTMLVideoElement` seeking was the temporary backend (now only the fallback).
+  - Blob URLs were not persisted in `.zproj` (now handled by asset relink).
+  - Export has no cancel button yet (the controller already accepts an `AbortSignal`); imported audio is not mixed into the export.
+- **Next step**: M3, define a `Demuxer` interface and put a real demux -> WebCodecs decode path behind the existing `MediaBackend`.
+
+## Earlier Implementation
 
 ### Web Editor Shell & Professional Workflow Foundation
 - **Milestone**: Professional Web Editor Shell

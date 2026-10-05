@@ -74,6 +74,8 @@ export interface LayerContent {
   strokeWidth?: number;
   assetId?: string;
   mediaUrl?: string;
+  /** Seconds into the source media where this layer's first frame comes from. */
+  mediaInPoint?: number;
   audioFreq?: number;
 }
 
@@ -104,18 +106,44 @@ export interface Composition {
   layers: Layer[];
 }
 
+/**
+ * Where an asset's bytes live. This decides what is persisted in a `.zproj`:
+ *  - `embedded`: the data is in `url` itself (a `data:` URL) and is saved with the project.
+ *  - `file`: a user file opened in this session (`blob:` URL). Only the fingerprint is saved;
+ *    after reopening, the asset is offline until the file is relinked.
+ *  - `remote`: an http(s) URL, saved as-is.
+ */
+export type AssetSource =
+  | { kind: 'embedded' }
+  | { kind: 'file'; fileName: string; size: number; lastModified: number }
+  | { kind: 'remote' };
+
 export interface Asset {
   id: ID;
   name: string;
   type: 'video' | 'image' | 'audio';
+  /** Runtime URL used to open the media. Empty string while the asset is offline. */
   url: string;
+  source: AssetSource;
   width?: number;
   height?: number;
   duration?: number;
 }
 
+/** An asset is offline when it has no usable URL (e.g. a file asset after reopening a project). */
+export function isAssetOffline(asset: Asset): boolean {
+  return !asset.url;
+}
+
+/** Cheap identity check used to auto-relink a re-imported file to an offline asset. */
+export function fileMatchesAsset(file: { name: string; size: number }, asset: Asset): boolean {
+  return asset.source.kind === 'file' && asset.source.fileName === file.name && asset.source.size === file.size;
+}
+
+export const PROJECT_VERSION = 2;
+
 export interface Project {
-  version: 1;
+  version: 2;
   id: ID;
   name: string;
   compositions: Composition[];
@@ -342,7 +370,7 @@ export function createComposition(): Composition {
 
 export function createProject(): Project {
   return {
-    version: 1,
+    version: 2,
     id: crypto.randomUUID(),
     name: 'ZiStudio Master Project',
     compositions: [createComposition()],
@@ -351,6 +379,7 @@ export function createProject(): Project {
         id: 'asset-sample-bg',
         name: 'Space Gradient 4K',
         type: 'image',
+        source: { kind: 'embedded' },
         url: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="%230f172a"/><stop offset="100%" stop-color="%230284c7"/></linearGradient></defs><rect width="100%" height="100%" fill="url(%23g)"/></svg>',
         width: 1920,
         height: 1080,
@@ -359,14 +388,79 @@ export function createProject(): Project {
   };
 }
 
+/** Layers that reference an asset take their runtime media URL from it. */
+function bindLayerMedia(project: Project): Project {
+  const byId = new Map(project.assets.map((a) => [a.id, a]));
+  return {
+    ...project,
+    compositions: project.compositions.map((comp) => ({
+      ...comp,
+      layers: comp.layers.map((layer) => {
+        const asset = layer.content.assetId ? byId.get(layer.content.assetId) : undefined;
+        if (!asset) return layer;
+        const mediaUrl = asset.url || undefined;
+        return layer.content.mediaUrl === mediaUrl ? layer : { ...layer, content: { ...layer.content, mediaUrl } };
+      }),
+    })),
+  };
+}
+
+/** Re-sync every asset-backed layer's `mediaUrl` with its asset (after import/relink). */
+export function rebindAssetLayers(project: Project): Project {
+  return bindLayerMedia(project);
+}
+
+function isSessionUrl(url: string | undefined): boolean {
+  return !!url && url.startsWith('blob:');
+}
+
+/** What is actually written to disk: session-only URLs never leave the browser. */
+export function toPersistedProject(project: Project): Project {
+  const assets = project.assets.map((a) => (a.source.kind === 'file' || isSessionUrl(a.url) ? { ...a, url: '' } : a));
+  const compositions = project.compositions.map((comp) => ({
+    ...comp,
+    layers: comp.layers.map((layer) =>
+      isSessionUrl(layer.content.mediaUrl) ? { ...layer, content: { ...layer.content, mediaUrl: undefined } } : layer
+    ),
+  }));
+  return { ...project, assets, compositions };
+}
+
 export function serializeProject(project: Project): string {
-  return JSON.stringify(project, null, 2);
+  return JSON.stringify(toPersistedProject(project), null, 2);
+}
+
+/** v1 -> v2: assets gain a `source`; session blob URLs are dropped (the asset becomes offline). */
+function migrateV1toV2(raw: any): any {
+  const assets = (raw.assets ?? []).map((a: any) => {
+    const url: string = a.url ?? '';
+    if (url.startsWith('blob:')) {
+      return { ...a, url: '', source: { kind: 'file', fileName: a.name, size: -1, lastModified: 0 } };
+    }
+    return { ...a, source: url.startsWith('data:') ? { kind: 'embedded' } : { kind: 'remote' } };
+  });
+  const compositions = (raw.compositions ?? []).map((comp: any) => ({
+    ...comp,
+    layers: (comp.layers ?? []).map((layer: any) =>
+      isSessionUrl(layer.content?.mediaUrl) ? { ...layer, content: { ...layer.content, mediaUrl: undefined } } : layer
+    ),
+  }));
+  return { ...raw, version: 2, assets, compositions };
 }
 
 export function deserializeProject(json: string): Project {
-  const parsed = JSON.parse(json);
-  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.compositions)) {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new Error('Invalid ZiStudio project (.zproj): not valid JSON.');
+  }
+  if (!parsed || typeof parsed.version !== 'number' || !Array.isArray(parsed.compositions)) {
     throw new Error('Invalid ZiStudio project (.zproj) schema format.');
   }
-  return parsed as Project;
+  if (parsed.version > PROJECT_VERSION) {
+    throw new Error(`This project was saved by a newer ZiStudio (format v${parsed.version}).`);
+  }
+  if (parsed.version === 1) parsed = migrateV1toV2(parsed);
+  return bindLayerMedia(parsed as Project);
 }

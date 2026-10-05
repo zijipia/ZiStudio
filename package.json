@@ -10,6 +10,7 @@
     "build": "npm run build --workspace=apps/studio-web",
     "preview": "npm run preview --workspace=apps/studio-web",
     "typecheck": "npm run typecheck --workspace=apps/studio-web",
-    "lint": "npm run typecheck --workspace=apps/studio-web"
+    "lint": "npm run typecheck --workspace=apps/studio-web",
+    "test": "npm run test --workspace=apps/studio-web"
   }
 }

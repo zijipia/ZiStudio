@@ -22,7 +22,7 @@ export class MediaFrameScheduler {
   }
 
   async getFrame(source: MediaSource, time: number, signal?: AbortSignal): Promise<MediaFrame | null> {
-    const cached = this.cache.getNearest(time, this.tolerance);
+    const cached = this.cache.getCovering(time, this.tolerance);
     if (cached) return cached;
 
     const requestId = ++this.requestId;

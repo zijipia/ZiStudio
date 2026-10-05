@@ -1,6 +1,10 @@
 import type { EditorState } from './editor';
 import type { Effect, Keyframe, Layer, PropertyValue } from './model';
 
+function isTimeBasedMedia(layer: Layer): boolean {
+  return layer.type === 'video' || layer.type === 'audio';
+}
+
 export interface Command {
   label: string;
   execute(state: EditorState): EditorState;
@@ -314,6 +318,12 @@ export class SplitLayerCommand implements Command {
       start: this.splitTime,
       duration: secondDuration,
     };
+    if (isTimeBasedMedia(original)) {
+      newLayer.content = {
+        ...newLayer.content,
+        mediaInPoint: (original.content.mediaInPoint ?? 0) + firstDuration,
+      };
+    }
 
     const nextLayers = [...comp.layers];
     nextLayers[idx] = updatedOriginal;
@@ -366,6 +376,9 @@ export class MoveLayerTimingCommand implements Command {
   private prevDuration: number;
   private nextStart: number;
   private nextDuration: number;
+  private prevInPoint: number | undefined;
+  private nextInPoint: number | undefined;
+  private inPointResolved = false;
 
   constructor(layerId: string, prevStart: number, prevDuration: number, nextStart: number, nextDuration: number) {
     this.layerId = layerId;
@@ -376,20 +389,38 @@ export class MoveLayerTimingCommand implements Command {
   }
 
   execute(state: EditorState): EditorState {
-    return this.applyTiming(state, this.nextStart, this.nextDuration);
+    return this.applyTiming(state, this.nextStart, this.nextDuration, true);
   }
 
   undo(state: EditorState): EditorState {
-    return this.applyTiming(state, this.prevStart, this.prevDuration);
+    return this.applyTiming(state, this.prevStart, this.prevDuration, false);
   }
 
-  private applyTiming(state: EditorState, start: number, duration: number): EditorState {
+  /** A left trim keeps the clip's end fixed while the start moves; the media must not slide. */
+  private isLeftTrim(): boolean {
+    const prevEnd = this.prevStart + this.prevDuration;
+    const nextEnd = this.nextStart + Math.max(0.1, this.nextDuration);
+    return Math.abs(prevEnd - nextEnd) < 1e-6 && Math.abs(this.nextStart - this.prevStart) > 1e-9;
+  }
+
+  private applyTiming(state: EditorState, start: number, duration: number, forward: boolean): EditorState {
     const comp = state.project.compositions.find(c => c.id === state.activeCompositionId);
     if (!comp) return state;
 
-    const layers = comp.layers.map(l =>
-      l.id === this.layerId ? { ...l, start, duration: Math.max(0.1, duration) } : l
-    );
+    const layers = comp.layers.map(l => {
+      if (l.id !== this.layerId) return l;
+      if (!this.inPointResolved) {
+        this.prevInPoint = l.content.mediaInPoint;
+        this.nextInPoint =
+          isTimeBasedMedia(l) && this.isLeftTrim()
+            ? Math.max(0, (l.content.mediaInPoint ?? 0) + (this.nextStart - this.prevStart))
+            : l.content.mediaInPoint;
+        this.inPointResolved = true;
+      }
+      const inPoint = forward ? this.nextInPoint : this.prevInPoint;
+      const content = inPoint === l.content.mediaInPoint ? l.content : { ...l.content, mediaInPoint: inPoint };
+      return { ...l, start, duration: Math.max(0.1, duration), content };
+    });
 
     const compositions = state.project.compositions.map(c =>
       c.id === comp.id ? { ...c, layers } : c

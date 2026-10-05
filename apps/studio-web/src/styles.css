@@ -2281,3 +2281,20 @@ input, select, textarea { font: inherit; color: inherit; }
   color: #38bdf8;
 }
 
+
+.asset-offline-badge {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.9);
+  border-radius: 3px;
+}
+.asset-offline-badge.inline {
+  position: static;
+  margin-left: 6px;
+}

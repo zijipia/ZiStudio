@@ -1,9 +1,11 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import type { Composition } from '../model';
 import { CompositionRenderer } from '../renderer';
+import type { FrameProvider } from '../runtime/frame-provider';
 
 interface ViewerPanelProps {
   composition: Composition;
+  frameProvider?: FrameProvider | null;
   currentTime: number;
   selectedLayerId: string | null;
   pan: [number, number];
@@ -27,6 +29,7 @@ interface ViewerPanelProps {
 
 export const ViewerPanel: React.FC<ViewerPanelProps> = ({
   composition,
+  frameProvider = null,
   currentTime,
   selectedLayerId,
   pan,
@@ -62,12 +65,24 @@ export const ViewerPanel: React.FC<ViewerPanelProps> = ({
     return 0.38;
   }, [zoomLevel]);
 
-  // Initialize renderer
+  // Bumped whenever the media layer has a newer decoded frame, so the viewer redraws.
+  const [frameTick, setFrameTick] = useState(0);
+
+  // Initialize renderer (recreated if the frame provider changes)
   useEffect(() => {
     if (canvasRef.current) {
-      rendererRef.current = new CompositionRenderer(canvasRef.current);
+      rendererRef.current = new CompositionRenderer(canvasRef.current, frameProvider);
+      setFrameTick((t) => t + 1);
     }
-  }, []);
+    return () => {
+      rendererRef.current = null;
+    };
+  }, [frameProvider]);
+
+  useEffect(() => {
+    if (!frameProvider) return;
+    return frameProvider.subscribe(() => setFrameTick((t) => t + 1));
+  }, [frameProvider]);
 
   // Update canvas size according to container dimensions
   useEffect(() => {
@@ -133,6 +148,7 @@ export const ViewerPanel: React.FC<ViewerPanelProps> = ({
     isPlaying,
     resolution,
     channelMode,
+    frameTick,
   ]);
 
   // Direct interactive dragging of selected layer
