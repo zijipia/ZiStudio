@@ -150,3 +150,69 @@ describe('timestamp quantization', () => {
     expect(cache.getCovering(0.05, 1 / 48)).toBe(f1);
   });
 });
+
+describe('MediaFrameCache memory budget', () => {
+  // 100x100 RGBA = 40,000 bytes per frame
+  const big = (timestamp: number, byteSize?: number) => {
+    const close = vi.fn();
+    const f: MediaFrame = { timestamp, width: 100, height: 100, byteSize, source: {} as CanvasImageSource, close };
+    return Object.assign(f, { close });
+  };
+
+  it('evicts least-recently-used frames to stay within maxBytes', () => {
+    const cache = new MediaFrameCache({ maxFrames: 100, maxBytes: 100_000 });
+    const frames = [1, 2, 3, 4].map((t) => big(t));
+    frames.forEach((f) => cache.set(f.timestamp, f));
+    expect(cache.size).toBe(2);
+    expect(cache.bytes).toBe(80_000);
+    expect(frames[0].close).toHaveBeenCalled();
+    expect(frames[1].close).toHaveBeenCalled();
+    expect(frames[3].close).not.toHaveBeenCalled();
+  });
+
+  it('honors an explicit byteSize and keeps the newest frame even if it exceeds the budget', () => {
+    const cache = new MediaFrameCache({ maxBytes: 1000 });
+    const huge = big(1, 5000);
+    cache.set(1, huge);
+    expect(cache.size).toBe(1);
+    expect(huge.close).not.toHaveBeenCalled();
+    const next = big(2, 500);
+    cache.set(2, next);
+    expect(huge.close).toHaveBeenCalled();
+    expect(cache.bytes).toBe(500);
+  });
+
+  it('keeps byte accounting exact across replace, delete and clear', () => {
+    const cache = new MediaFrameCache({ maxBytes: 1_000_000 });
+    cache.set(1, big(1));
+    cache.set(1, big(1)); // replace
+    expect(cache.bytes).toBe(40_000);
+    cache.set(2, big(2));
+    cache.delete(1);
+    expect(cache.bytes).toBe(40_000);
+    cache.clear();
+    expect(cache.bytes).toBe(0);
+  });
+
+  it('setLimits evicts immediately and canFit reports headroom', () => {
+    const cache = new MediaFrameCache({ maxBytes: 1_000_000 });
+    [1, 2, 3].forEach((t) => cache.set(t, big(t)));
+    expect(cache.canFit(40_000)).toBe(true);
+    cache.setLimits({ maxBytes: 90_000 });
+    expect(cache.size).toBe(2);
+    expect(cache.canFit(40_000)).toBe(false);
+  });
+
+  it('evictBefore drops frames behind the one on screen, keeping that one', () => {
+    const cache = new MediaFrameCache({ maxBytes: 1_000_000 });
+    const frames = [0, 1, 2, 3].map((t) => big(t));
+    frames.forEach((f) => cache.set(f.timestamp, f));
+    expect(cache.evictBefore(2.5)).toBe(2);
+    expect(frames[0].close).toHaveBeenCalled();
+    expect(frames[1].close).toHaveBeenCalled();
+    expect(frames[2].close).not.toHaveBeenCalled();
+    expect(frames[3].close).not.toHaveBeenCalled();
+    expect(cache.size).toBe(2);
+    expect(cache.evictBefore(-5)).toBe(0); // nothing at or before: nothing to drop
+  });
+});

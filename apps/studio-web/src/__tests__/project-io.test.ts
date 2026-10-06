@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  compositionAudio,
   createProject,
   deserializeProject,
   fileMatchesAsset,
   isAssetOffline,
+  layerGain,
   serializeProject,
   type Asset,
   type Layer,
@@ -81,7 +83,7 @@ describe('project serialization', () => {
       ],
     };
     const p = deserializeProject(JSON.stringify(v1));
-    expect(p.version).toBe(2);
+    expect(p.version).toBe(3);
     const [v, i, r] = p.assets;
     expect(isAssetOffline(v)).toBe(true);
     expect(v.source.kind).toBe('file');
@@ -158,5 +160,66 @@ describe('relink', () => {
     const rt = new EditorRuntime(deserializeProject(serializeProject(projectWith(fileAsset()))), { media: bad });
     await expect(rt.composition.relinkAsset('a1', fakeFile('x.txt', 1))).rejects.toThrow(/could not be opened/);
     expect(isAssetOffline(rt.getState().project.assets.find((a) => a.id === 'a1')!)).toBe(true);
+  });
+});
+
+
+describe('project format v3', () => {
+  const v2 = {
+    version: 2,
+    id: 'p',
+    name: 'v2 project',
+    assets: [],
+    compositions: [
+      {
+        id: 'c', name: 'c', width: 1280, height: 720, fps: 30, duration: 5,
+        layers: [
+          { id: 'a', type: 'audio', content: {} },
+          { id: 'v', type: 'video', content: {} },
+          { id: 'i', type: 'image', content: {} },
+          { id: 'x', type: 'audio', content: {}, audio: { volume: 0.25, muted: true } },
+        ],
+      },
+    ],
+  };
+
+  it('migrates v2: compositions get audio format + color space, sound layers get a mix setting', () => {
+    const p = deserializeProject(JSON.stringify(v2));
+    expect(p.version).toBe(3);
+    const c = p.compositions[0];
+    expect(c.audio).toEqual({ sampleRate: 48000, channels: 2 });
+    expect(c.colorSpace).toBe('srgb');
+    expect(c.layers[0].audio).toEqual({ volume: 1, muted: false });
+    expect(c.layers[1].audio).toEqual({ volume: 1, muted: false });
+    expect(c.layers[2].audio).toBeUndefined(); // an image has no sound
+    expect(c.layers[3].audio).toEqual({ volume: 0.25, muted: true }); // existing settings survive
+  });
+
+  it('migrates v1 straight through to v3', () => {
+    const p = deserializeProject(
+      JSON.stringify({ version: 1, id: 'p', name: 'o', assets: [], compositions: [{ id: 'c', name: 'c', width: 1, height: 1, fps: 30, duration: 1, layers: [{ id: 'l', type: 'audio', content: {} }] }] })
+    );
+    expect(p.version).toBe(3);
+    expect(p.compositions[0].layers[0].audio).toEqual({ volume: 1, muted: false });
+  });
+
+  it('round-trips v3 unchanged', () => {
+    const p = deserializeProject(JSON.stringify(v2));
+    expect(deserializeProject(serializeProject(p))).toEqual(p);
+  });
+
+  it('layerGain: unity by default, 0 when muted, clamped to a sane range', () => {
+    expect(layerGain({})).toBe(1);
+    expect(layerGain({ audio: { volume: 0.5, muted: false } })).toBe(0.5);
+    expect(layerGain({ audio: { volume: 0.5, muted: true } })).toBe(0);
+    expect(layerGain({ audio: { volume: -3, muted: false } })).toBe(0);
+    expect(layerGain({ audio: { volume: 99, muted: false } })).toBe(4);
+    expect(layerGain({ audio: { volume: NaN, muted: false } })).toBe(1);
+  });
+
+  it('compositionAudio falls back to defaults for missing or nonsensical settings', () => {
+    expect(compositionAudio({})).toEqual({ sampleRate: 48000, channels: 2 });
+    expect(compositionAudio({ audio: { sampleRate: 44100, channels: 1 } })).toEqual({ sampleRate: 44100, channels: 1 });
+    expect(compositionAudio({ audio: { sampleRate: 5, channels: 2 } }).sampleRate).toBe(48000);
   });
 });

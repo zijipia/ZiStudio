@@ -17,6 +17,8 @@ export interface MediaFrame {
   width: number;
   height: number;
   source: CanvasImageSource | VideoFrame;
+  /** Memory the frame holds, in bytes. When absent, `width * height * 4` (RGBA) is assumed. */
+  byteSize?: number;
   close(): void;
 }
 
@@ -24,6 +26,12 @@ export interface MediaSource {
   readonly id: string;
   readonly url: string;
   readonly metadata: MediaMetadata | null;
+  /**
+   * True when decoding the next frame is cheap and sequential (a real decoder that keeps
+   * decoding forward). Only such sources are decoded ahead of the playhead; an
+   * HTMLVideoElement has to seek for every frame, so prefetching it would only add contention.
+   */
+  readonly supportsPrefetch?: boolean;
   load(signal?: AbortSignal): Promise<MediaMetadata>;
   seek(time: number): Promise<void>;
   getFrame(time: number, signal?: AbortSignal): Promise<MediaFrame | null>;

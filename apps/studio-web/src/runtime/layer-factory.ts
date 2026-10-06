@@ -3,6 +3,7 @@ import {
   createSolidLayer,
   createTextLayer,
   createTransform,
+  defaultLayerAudio,
   type Asset,
   type Composition,
   type Layer,
@@ -35,6 +36,7 @@ export function createLayerOfType(type: LayerType, composition: Composition): La
         content: { audioFreq: 440 + count * 40 },
         visible: true,
         locked: false,
+        audio: defaultLayerAudio(),
       };
     }
     default: {
@@ -73,5 +75,6 @@ export function createLayerFromAsset(asset: Asset, composition: Composition): La
     content: { mediaUrl: asset.url || undefined, assetId: asset.id, mediaInPoint: 0 },
     visible: true,
     locked: false,
+    ...(type === 'image' ? {} : { audio: defaultLayerAudio() }),
   };
 }

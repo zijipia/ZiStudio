@@ -68,11 +68,12 @@ export function App() {
   const isLooping = editorState.isLooping;
   const selectedLayer = composition.layers.find((l) => l.id === editorState.selectedLayerId) || null;
 
-  // Audio tone playback (placeholder synth until real audio decoding lands)
+  // Synth tone for audio layers that have no media (imported audio is decoded by runtime.audio)
   useEffect(() => {
     if (isPlaying && !isMuted) {
       const activeAudio = composition.layers.find(
-        (l) => l.type === 'audio' && l.visible && time >= l.start && time <= l.start + l.duration
+        (l) =>
+          l.type === 'audio' && !l.content.mediaUrl && l.visible && time >= l.start && time <= l.start + l.duration
       );
       if (activeAudio) {
         audioEngine.playTone(activeAudio.content.audioFreq || 440, 0.08);
@@ -178,7 +179,10 @@ export function App() {
     setIsExporting(true);
     setExportProgress(0);
     try {
-      await runtime.exporter.exportWebM({ onProgress: setExportProgress });
+      const result = await runtime.exporter.exportWebM({ onProgress: setExportProgress });
+      if (result.audio === 'unsupported') {
+        window.alert('Exported without sound: this browser cannot encode Opus or Vorbis audio.');
+      }
     } catch (err) {
       console.error('Video export error', err);
       window.alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -983,6 +987,7 @@ export function App() {
                 onUpdateFrequency={(layerId, freq) => {
                   handleUpdateLayerProps(layerId, { content: { audioFreq: freq } });
                 }}
+                onUpdateAudio={(layerId, change) => runtime.composition.setLayerAudio(layerId, change)}
               />
             ) : timelineMode === 'timeline' ? (
               <TimelinePanel

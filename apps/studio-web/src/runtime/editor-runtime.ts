@@ -1,5 +1,7 @@
 import { CommandManager, createEditorState, type Command, type EditorState } from '../editor';
 import type { Project } from '../model';
+import { getActiveComposition } from '../editor';
+import { AudioController } from './audio-controller';
 import { AnimationController } from './animation-controller';
 import { CompositionController } from './composition-controller';
 import { ExportController } from './export-controller';
@@ -9,6 +11,7 @@ import { SelectionController } from './selection-controller';
 
 export interface EditorRuntimeOptions {
   media?: MediaController;
+  audio?: AudioController;
   clock?: FrameClock;
 }
 
@@ -23,6 +26,7 @@ type Listener = () => void;
 export class EditorRuntime {
   readonly commands = new CommandManager();
   readonly media: MediaController;
+  readonly audio: AudioController;
   readonly playback: PlaybackController;
   readonly selection: SelectionController;
   readonly animation: AnimationController;
@@ -35,6 +39,7 @@ export class EditorRuntime {
   constructor(project: Project, options: EditorRuntimeOptions = {}) {
     this.state = createEditorState(project);
     this.media = options.media ?? new MediaController();
+    this.audio = options.audio ?? new AudioController();
     this.playback = new PlaybackController(this, options.clock ?? createBrowserClock());
     this.selection = new SelectionController(this);
     this.animation = new AnimationController(this);
@@ -54,9 +59,12 @@ export class EditorRuntime {
 
   /** Apply a state transition. Returning the same object is a no-op. */
   update(updater: (state: EditorState) => EditorState): void {
-    const next = updater(this.state);
-    if (next === this.state) return;
+    const previous = this.state;
+    const next = updater(previous);
+    if (next === previous) return;
     this.state = next;
+    // Volume / mute edits (and their undo) must be heard while playing, not on the next play.
+    if (next.project !== previous.project) this.audio.syncLayers(getActiveComposition(next));
     for (const listener of this.listeners) listener();
   }
 
@@ -78,12 +86,14 @@ export class EditorRuntime {
     this.playback.pause();
     this.commands.clear();
     this.media.reset();
+    this.audio.reset();
     this.update(() => createEditorState(project));
   }
 
   dispose(): void {
     this.playback.dispose();
     this.media.dispose();
+    this.audio.dispose();
     this.listeners.clear();
   }
 }

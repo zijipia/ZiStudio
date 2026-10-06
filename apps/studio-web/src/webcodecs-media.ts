@@ -111,6 +111,7 @@ export class WebCodecsPictureDecoder implements PictureDecoder {
 
 export class WebCodecsMediaSource implements MediaSource {
   readonly id = crypto.randomUUID();
+  readonly supportsPrefetch = true;
   private loaded: MediaMetadata | null = null;
   private info: VideoTrackInfo | null = null;
 

@@ -1,5 +1,5 @@
 import type { EditorState } from './editor';
-import type { Effect, Keyframe, Layer, PropertyValue } from './model';
+import type { Effect, Keyframe, Layer, LayerAudio, PropertyValue } from './model';
 
 function isTimeBasedMedia(layer: Layer): boolean {
   return layer.type === 'video' || layer.type === 'audio';
@@ -9,6 +9,11 @@ export interface Command {
   label: string;
   execute(state: EditorState): EditorState;
   undo(state: EditorState): EditorState;
+  /**
+   * Called on the newest history entry with the command that was just executed. Return a
+   * command that stands for both (they become one undo step), or null to keep them separate.
+   */
+  coalesce?(next: Command): Command | null;
 }
 
 export class SetPropertyValueCommand<T extends PropertyValue> implements Command {
@@ -588,6 +593,41 @@ export class UpdateLayerPropertiesCommand implements Command {
       c.id === comp.id ? { ...c, layers } : c
     );
 
+    return { ...state, project: { ...state.project, compositions } };
+  }
+}
+
+/** Change a layer's mix settings (volume, mute). Edits in quick succession on one layer are one undo step. */
+export class SetLayerAudioCommand implements Command {
+  label = 'Change Layer Audio';
+  static readonly COALESCE_MS = 800;
+
+  constructor(
+    private readonly layerId: string,
+    private readonly prev: LayerAudio | undefined,
+    private readonly next: LayerAudio,
+    private readonly at: number = Date.now()
+  ) {}
+
+  execute(state: EditorState): EditorState {
+    return this.apply(state, this.next);
+  }
+
+  undo(state: EditorState): EditorState {
+    return this.apply(state, this.prev);
+  }
+
+  coalesce(next: Command): Command | null {
+    if (!(next instanceof SetLayerAudioCommand)) return null;
+    if (next.layerId !== this.layerId || next.at - this.at > SetLayerAudioCommand.COALESCE_MS) return null;
+    return new SetLayerAudioCommand(this.layerId, this.prev, next.next, next.at);
+  }
+
+  private apply(state: EditorState, audio: LayerAudio | undefined): EditorState {
+    const comp = state.project.compositions.find((c) => c.id === state.activeCompositionId);
+    if (!comp) return state;
+    const layers = comp.layers.map((l) => (l.id === this.layerId ? { ...l, audio } : l));
+    const compositions = state.project.compositions.map((c) => (c.id === comp.id ? { ...c, layers } : c));
     return { ...state, project: { ...state.project, compositions } };
   }
 }

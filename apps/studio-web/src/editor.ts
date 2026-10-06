@@ -52,7 +52,11 @@ export class CommandManager {
     const nextState = command.execute(state);
     // A command that changed nothing must not pollute the undo history.
     if (nextState === state) return state;
-    this.undoStack.push(command);
+    // Continuous edits (dragging a fader) fold into one undo step.
+    const last = this.undoStack[this.undoStack.length - 1];
+    const merged = last?.coalesce?.(command) ?? null;
+    if (merged) this.undoStack[this.undoStack.length - 1] = merged;
+    else this.undoStack.push(command);
     if (this.undoStack.length > this.maxHistory) {
       this.undoStack.shift();
     }

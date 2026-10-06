@@ -5,6 +5,7 @@ import {
   DeleteEffectCommand,
   DeleteLayerCommand,
   ReorderLayerCommand,
+  SetLayerAudioCommand,
   SplitLayerCommand,
   UpdateEffectPropertyCommand,
   UpdateLayerPropertiesCommand,
@@ -12,10 +13,17 @@ import {
 import { getActiveComposition } from '../editor';
 import {
   createEffect,
+  defaultLayerAudio,
   fileMatchesAsset,
   isAssetOffline,
   rebindAssetLayers,
-  type Asset, type Effect, type EffectType, type Layer, type LayerType } from '../model';
+  type Asset,
+  type Effect,
+  type EffectType,
+  type Layer,
+  type LayerAudio,
+  type LayerType,
+} from '../model';
 import type { EditorRuntime } from './editor-runtime';
 import { createLayerFromAsset, createLayerOfType, duplicateLayer } from './layer-factory';
 
@@ -68,6 +76,16 @@ export class CompositionController {
   updateLayer(layerId: string, updates: Partial<Layer>): void {
     const layer = this.composition.layers.find((l) => l.id === layerId);
     if (layer) this.runtime.execute(new UpdateLayerPropertiesCommand(layerId, layer, updates));
+  }
+
+  /** Set a layer's volume and/or mute. A drag of a fader folds into one undo step. */
+  setLayerAudio(layerId: string, change: Partial<LayerAudio>): void {
+    const layer = this.composition.layers.find((l) => l.id === layerId);
+    if (!layer) return;
+    const prev = layer.audio;
+    const next: LayerAudio = { ...(prev ?? defaultLayerAudio()), ...change };
+    if (prev && prev.volume === next.volume && prev.muted === next.muted) return;
+    this.runtime.execute(new SetLayerAudioCommand(layerId, prev, next));
   }
 
   reorder(fromIndex: number, toIndex: number): void {
@@ -167,6 +185,7 @@ export class CompositionController {
       meta = await this.runtime.media.probe(url, existing.type);
     } catch (error) {
       this.runtime.media.release(url);
+      this.runtime.audio.release(url);
       URL.revokeObjectURL(url);
       throw new Error(`"${file.name}" could not be opened as ${existing.type}.`);
     }
@@ -187,6 +206,7 @@ export class CompositionController {
 
     if (existing.url && existing.url !== url) {
       this.runtime.media.release(existing.url);
+      this.runtime.audio.release(existing.url);
       if (existing.url.startsWith('blob:')) URL.revokeObjectURL(existing.url);
     }
     return relinked;
@@ -203,7 +223,10 @@ export class CompositionController {
       const stillUsed = this.runtime
         .getState()
         .project.compositions.some((c) => c.layers.some((l) => l.content.mediaUrl === asset.url));
-      if (!stillUsed) this.runtime.media.release(asset.url);
+      if (!stillUsed) {
+        this.runtime.media.release(asset.url);
+        this.runtime.audio.release(asset.url);
+      }
     }
   }
 }

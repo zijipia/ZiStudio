@@ -4,7 +4,7 @@
 
 ## Current milestone: Media Runtime (M4: frame pipeline)
 
-**Status:** In progress. M0-M3 complete; next is M4 (decode prefetch + audio).
+**Status:** M0-M4 complete in code and unit tests; M4 is **not yet verified in a real browser** (see Latest Implementation). Next is the rest of the model upgrade (matte/masks/time-remap/proxy) and the first real-browser pass.
 
 ### Implemented
 
@@ -66,10 +66,14 @@
 
 - [x] Connect imported video/image assets to the composition renderer via `MediaController` (HTMLVideoElement backend)
 - [ ] GPAC-WASM `Demuxer` implementation (the interface exists; mediabunny is the first implementation)
-- [ ] **M4** Frame pipeline: prefetch ahead of the playhead (decode scheduler), `FrameCache` memory budget, proper A/V clock
-- [ ] Rest of the model upgrade: Asset proxy/interpretation/cache, Layer time-remap/parent/matte/masks, Composition render/color/audio settings (v2 -> v3 migration)
-- [ ] Audio decoding for imported audio (audio layers still play a synth tone)
-- [ ] Decode scheduler prefetch and playback integration
+- [x] **M4** Frame pipeline: decode-ahead of the playhead, `MediaFrameCache` memory budget, imported audio decode, A/V clock (audio output clock is the transport master)
+- [x] Model v3 (v2 -> v3 migration): `Layer.audio {volume, muted}`, `Composition.audio {sampleRate, channels}`, `Composition.colorSpace`
+- [ ] Rest of the model upgrade, each together with the code that uses it: Asset proxy/interpretation/cache, Layer time-remap/matte/masks (`parentId` exists but nothing uses it yet), Composition render settings
+- [x] Audio decoding for imported audio and for the audio track of video layers (playback only; not mixed into export yet)
+- [x] Decode scheduler prefetch and playback integration
+- [x] Mix imported audio into the WebM export (offline mix-down, Opus/Vorbis)
+- [ ] Master fader/mute, solo and real meters in the mixer panel (still local/simulated)
+- [ ] Audio fallback for codecs the WebCodecs `AudioDecoder` lacks (e.g. `decodeAudioData`)
 - [ ] wgpu native renderer crate
 - [ ] GStreamer native media backend
 - [ ] GPAC native container/muxer integration
@@ -80,6 +84,40 @@
 - [ ] Optical-flow / planar tracking engine
 
 ## Latest Implementation
+
+### Audio in export, model v3, real mixer controls
+- **Export audio** (`runtime/audio-mixer.ts`, `runtime/export-controller.ts`): `CompositionAudioMixer` decodes every audible layer sequentially and sums it at the layer's timeline position (start, duration, in-point, volume), resamples with linear interpolation to the composition's rate, clamps to [-1, 1] and hands back 1 s blocks, so memory does not grow with the length of the composition. `exportWebM` adds an Opus (or Vorbis) track and writes audio blocks about a second ahead of the video frames. It returns `{ audio: 'included' | 'none' | 'unsupported' }`; the UI alerts when the browser has no audio encoder. Muted layers are not even decoded. A file that fails to decode goes silent from that point; the export continues.
+- **Model v3** (`model.ts`): `PROJECT_VERSION = 3`. `Layer.audio {volume (linear gain), muted}`, `Composition.audio {sampleRate, channels}`, `Composition.colorSpace`. `migrateV2toV3` fills defaults (v1 projects go through both migrations); `layerGain()` / `compositionAudio()` supply defaults for objects created without the fields. Only fields that something already uses were added; matte, masks, time-remap and asset proxies wait until the renderer/pipeline can use them.
+- **Mixer panel** (`components/AudioMixerPanel.tsx`): faders and mute buttons now edit `Layer.audio` (before they were local state with no effect on sound), and video layers with media get a strip. Fader position 80 is unity; the dB readout matches the gain actually applied.
+- **Live changes**: `EditorRuntime.update` calls `AudioController.syncLayers` when the project changes, so volume, mute, hiding or deleting a layer (and their undo) are heard immediately; voices are re-leveled through a per-voice gain with a 10 ms ramp. `AudioController` also prunes finished voices.
+- **Undo**: `Command.coalesce` is a new optional hook; `SetLayerAudioCommand` folds edits of one layer within 800 ms, so dragging a fader is one undo step.
+- **Tests**: 162 (+34): mixer (levels, placement, in-point, resampling, block-size independence, mute/gain, failures, abort), controller gain, v2->v3 migration, undo coalescing, runtime->audio sync, fader mapping. Mutation checks on the resampler, clamp, block carry-over and coalescing each failed the intended test.
+- **Not verified**:
+  - Nothing ran in a real browser: `AudioSampleSource` / Opus encoding, the exported file's sync with video, and the fader feel are covered only by fakes. Try: export a clip with sound, play the WebM, compare lip-sync at the end of a long clip; drag a fader while playing.
+  - Export mixes at the composition's sample rate; sources are converted with linear interpolation (fine for speech/music preview, not mastering quality).
+  - Layer volume range is 0 to 4x (+12 dB) and the fader reaches +10 dB. The master strip, solo, and the VU meters are still simulated.
+  - Layer edits other than volume/mute/visibility (move, trim) still apply at the next play or seek.
+- **Next step**: a real-browser pass over M3/M4/export; then model fields together with the features that use them (matte/masks first), or GPAC/native paths.
+
+## Previous Implementation (M4, kept for reference)
+
+### M4: decode-ahead, frame memory budget, audio decode, A/V clock
+- **Decode-ahead** (`runtime/media-controller.ts`): while playing, each video source decodes the frames after the playhead (default 0.5 s) one at a time through the same per-source chain as on-screen decodes, so an urgent request waits at most one frame. It stops when the lookahead is reached, the budget is full, the media ends, or playback pauses/jumps (seek, scrub, loop wrap). Only sources that declare `supportsPrefetch` take part (`WebCodecsMediaSource` yes; the `HTMLVideoElement` fallback no, it has to seek per frame). `MediaController.setPlaying()` is called by `PlaybackController`.
+- **Memory budget** (`media-cache.ts`): `MediaFrameCache` accounts bytes (`width*height*4` unless a frame reports `byteSize`) and evicts LRU past `maxBytes` as well as `maxFrames`. `MediaController` splits one budget (default 256 MiB) evenly between open video sources. Decode-ahead never evicts to make room: it asks `canFit()`, and `evictBefore(playhead)` drops frames the playhead already left, so a full cache of past frames cannot stall lookahead. `getStats()` exposes frames/bytes/budget.
+- **Audio decode** (`demux/audio-source.ts`): `AudioBackend`/`AudioClipSource` interface, mediabunny implementation (`AudioBufferSink`). Media time uses the same origin as the video decoder, so A and V line up. Files without audio, or with an undecodable codec, are silent without failing playback.
+- **Audio scheduling** (`runtime/audio-controller.ts`): decodes ahead (1 s) and schedules chunks on the Web Audio clock for every visible `audio` layer and for the audio of `video` layers with media; honors layer start, `mediaInPoint` and end. Late chunks are trimmed to what can still be scheduled instead of playing out of sync. `AudioEngine` gained `now()`, `latency`, `state`, `resume()`, `playBuffer()`; the synth tone now only plays for audio layers with no media.
+- **A/V clock** (`runtime/playback-controller.ts`): while audio runs, `compTime = anchorComp + (output.now() - latency - anchorOutput)` is the master clock and the playhead is read from it, so the picture follows what is heard. The anchor is reset on play, seek-while-playing and loop wrap (also after a long stall). Without a running audio context the rAF frame clock drives the playhead as before.
+- **Bugs found by the new tests and fixed**: decode-ahead did not stop at the end of the media; scheduling dropped the first 10 ms of every play/seek (it trimmed against the clamped playhead instead of the output clock); loop wrap after a long stall did not re-anchor audio.
+- **Tests**: `npm run typecheck`, `npm test` (128 tests, +35: cache budget, decode-ahead, audio scheduling/clock, A/V transport), `npm run build` clean.
+- **Not verified**:
+  - Nothing here ran in a real browser. The audio path (`AudioBufferSink`, `AudioContext` scheduling, output latency) and decode-ahead against the real WebCodecs decoder are covered only by fakes. Please try: play a video with sound in desktop Chrome, scrub while playing, loop wrap, pause/resume.
+  - A/V sync is correct by construction (same anchor), but the absolute offset depends on `outputLatency`, which browsers report differently (Bluetooth output especially).
+  - Edits to layers during playback (move/trim) are picked up on the next seek or play, not live.
+  - Two layers of the same file at different times in the same frame make decode-ahead restart each frame (it sees a jumping playhead); correct but not prefetching.
+  - Imported audio is not mixed into the WebM export yet.
+- **Next step**: model v3 upgrade (Asset proxy/interpretation, Layer time-remap/matte/masks, Composition settings), then audio in export.
+
+## Previous Implementation
 
 ### Model v2 (asset identity + relink) and M3 (demux -> WebCodecs)
 - **Model**: `Project.version` is now 2. `Asset.source` says where the bytes live. `serializeProject` writes only what survives a reload (file assets are saved as a name/size/mtime fingerprint with an empty URL); `deserializeProject` migrates v1, rejects newer versions, and re-binds layer media URLs from their assets. Relinking (manual or by re-importing the same file) updates the asset and every layer that references it.
@@ -101,7 +139,7 @@
   - `mediabunny` (MPL-2.0) was added as a dependency for demuxing and for WebM muxing in export.
 - **Next step**: M4, decode prefetch ahead of the playhead and a frame-cache memory budget, then audio decode and an A/V clock.
 
-## Previous Implementation
+## Earlier (M0-M2)
 
 ### M0 + M1 + M2: Test harness, Editor Runtime, Real media in the viewer
 - **What changed**:

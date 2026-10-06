@@ -1,19 +1,46 @@
 import {
+  AudioSample,
+  AudioSampleSource,
   BufferTarget,
   CanvasSource,
+  getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec,
   Output,
   QUALITY_HIGH,
   WebMOutputFormat,
 } from 'mediabunny';
+import { MediabunnyAudioBackend, type AudioBackend } from '../demux/audio-source';
+import { CompositionAudioMixer, type MixedBlock } from './audio-mixer';
 import { getActiveComposition } from '../editor';
 import { CompositionRenderer } from '../renderer';
-import { deserializeProject, serializeProject } from '../model';
+import { compositionAudio, deserializeProject, serializeProject } from '../model';
 import type { EditorRuntime } from './editor-runtime';
 
 export interface WebMExportOptions {
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;
+}
+
+export interface WebMExportResult {
+  /**
+   * `included`: the composition's audio was mixed into the file. `none`: nothing in the
+   * composition has decodable audio. `unsupported`: there is audio but this browser cannot
+   * encode Opus/Vorbis, so the file has video only.
+   */
+  audio: 'included' | 'none' | 'unsupported';
+}
+
+function toAudioSample(block: MixedBlock): AudioSample {
+  const frames = block.channels[0]?.length ?? 0;
+  const planar = new Float32Array(frames * block.channels.length); // f32-planar: all of channel 0, then channel 1, ...
+  block.channels.forEach((channel, index) => planar.set(channel, index * frames));
+  return new AudioSample({
+    data: planar,
+    format: 'f32-planar',
+    numberOfChannels: block.channels.length,
+    sampleRate: block.sampleRate,
+    timestamp: block.timestamp,
+  });
 }
 
 const yieldToUI = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -30,7 +57,10 @@ function download(blob: Blob, filename: string) {
 const slug = (name: string) => name.toLowerCase().replace(/\s+/g, '-');
 
 export class ExportController {
-  constructor(private readonly runtime: EditorRuntime) {}
+  constructor(
+    private readonly runtime: EditorRuntime,
+    private readonly audioBackend: AudioBackend = new MediabunnyAudioBackend()
+  ) {}
 
   saveProject(): void {
     const project = this.runtime.getState().project;
@@ -59,8 +89,11 @@ export class ExportController {
    * Frames are encoded with WebCodecs and timestamped by frame index, so the output has
    * the exact composition duration regardless of how fast the machine renders.
    * The editor playhead and viewer are not touched.
+   *
+   * The audio of every audible layer is mixed offline (see `CompositionAudioMixer`) and encoded
+   * as Opus, interleaved with the video frames.
    */
-  async exportWebM({ onProgress, signal }: WebMExportOptions = {}): Promise<void> {
+  async exportWebM({ onProgress, signal }: WebMExportOptions = {}): Promise<WebMExportResult> {
     const comp = getActiveComposition(this.runtime.getState());
     const width = comp.width - (comp.width % 2);
     const height = comp.height - (comp.height % 2);
@@ -71,6 +104,14 @@ export class ExportController {
 
     this.runtime.playback.pause();
 
+    const audioFormat = compositionAudio(comp);
+    const mixer = await CompositionAudioMixer.open(comp, {
+      backend: this.audioBackend,
+      sampleRate: audioFormat.sampleRate,
+      channels: audioFormat.channels,
+      signal,
+    });
+
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -79,9 +120,40 @@ export class ExportController {
     const output = new Output({ format: new WebMOutputFormat(), target: new BufferTarget() });
     const videoSource = new CanvasSource(canvas, { codec, bitrate: QUALITY_HIGH });
     output.addVideoTrack(videoSource, { frameRate: fps });
-    await output.start();
+
+    let audioSource: AudioSampleSource | null = null;
+    let audio: WebMExportResult['audio'] = 'none';
+    if (mixer.hasAudio) {
+      const audioCodec = await getFirstEncodableAudioCodec(['opus', 'vorbis'], {
+        numberOfChannels: audioFormat.channels,
+        sampleRate: audioFormat.sampleRate,
+      });
+      if (audioCodec) {
+        audioSource = new AudioSampleSource({ codec: audioCodec, quality: QUALITY_HIGH });
+        output.addAudioTrack(audioSource);
+        audio = 'included';
+      } else {
+        audio = 'unsupported';
+      }
+    }
+
+    /** Encode mixed audio up to composition time `until`, so audio and video are written in step. */
+    const pumpAudio = async (until: number) => {
+      if (!audioSource) return;
+      while (!mixer.finished && mixer.mixedUntil < until) {
+        const block = await mixer.nextBlock();
+        if (!block) break;
+        const sample = toAudioSample(block);
+        try {
+          await audioSource.add(sample);
+        } finally {
+          sample.close();
+        }
+      }
+    };
 
     try {
+      await output.start();
       const totalFrames = Math.max(1, Math.round(comp.duration * fps));
       for (let f = 0; f < totalFrames; f += 1) {
         if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
@@ -89,20 +161,25 @@ export class ExportController {
         await this.runtime.media.prefetch(comp, t);
         renderer.render(comp, t, 1, [0, 0], { exportMode: true });
         await videoSource.add(t, 1 / fps);
+        await pumpAudio(t + 1); // keep the audio about a second ahead of the video being written
         if (f % 4 === 0) {
           onProgress?.(Math.round((f / totalFrames) * 100));
           await yieldToUI();
         }
       }
+      await pumpAudio(comp.duration);
       await output.finalize();
     } catch (error) {
       await output.cancel().catch(() => undefined);
       throw error;
+    } finally {
+      await mixer.dispose();
     }
 
     onProgress?.(100);
     const buffer = (output.target as BufferTarget).buffer;
     if (!buffer) throw new Error('Encoder produced no output.');
     download(new Blob([buffer], { type: 'video/webm' }), `${slug(comp.name)}.webm`);
+    return { audio };
   }
 }

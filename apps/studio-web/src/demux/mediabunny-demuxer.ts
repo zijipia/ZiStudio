@@ -19,7 +19,7 @@ function wrap(packet: EncodedPacket): DemuxedPacket {
   };
 }
 
-async function createSource(url: string) {
+export async function createSource(url: string) {
   if (/^https?:/i.test(url)) return new UrlSource(url);
   // blob: and data: URLs are same-origin and cheap to turn back into a (lazy) Blob.
   const response = await fetch(url);

@@ -94,7 +94,23 @@ export interface Layer {
   solo?: boolean;
   is3D?: boolean;
   parentId?: string | null;
+  /** Mix settings of the layer's sound (audio layers, and the audio track of video layers). */
+  audio?: LayerAudio;
 }
+
+export interface LayerAudio {
+  /** Linear gain: 1 is unity, 0 is silence. */
+  volume: number;
+  muted: boolean;
+}
+
+export interface CompositionAudio {
+  /** Sample rate of the exported mix, Hz. */
+  sampleRate: number;
+  channels: 1 | 2;
+}
+
+export type ColorSpace = 'srgb';
 
 export interface Composition {
   id: ID;
@@ -104,6 +120,33 @@ export interface Composition {
   fps: number;
   duration: number;
   layers: Layer[];
+  /** Output audio format. Absent in projects older than v3: see `compositionAudio`. */
+  audio?: CompositionAudio;
+  colorSpace?: ColorSpace;
+}
+
+export const DEFAULT_AUDIO_SAMPLE_RATE = 48000;
+export const MAX_LAYER_GAIN = 4;
+
+export function defaultLayerAudio(): LayerAudio {
+  return { volume: 1, muted: false };
+}
+
+/** The gain a layer's sound is mixed with: 0 when muted, otherwise its volume clamped to a sane range. */
+export function layerGain(layer: Pick<Layer, 'audio'>): number {
+  const audio = layer.audio;
+  if (!audio) return 1;
+  if (audio.muted) return 0;
+  return Number.isFinite(audio.volume) ? Math.min(MAX_LAYER_GAIN, Math.max(0, audio.volume)) : 1;
+}
+
+/** The composition's output audio format, with defaults for projects that predate the setting. */
+export function compositionAudio(comp: Pick<Composition, 'audio'>): CompositionAudio {
+  const rate = comp.audio?.sampleRate;
+  return {
+    sampleRate: typeof rate === 'number' && rate >= 8000 && rate <= 192000 ? Math.round(rate) : DEFAULT_AUDIO_SAMPLE_RATE,
+    channels: comp.audio?.channels === 1 ? 1 : 2,
+  };
 }
 
 /**
@@ -140,10 +183,10 @@ export function fileMatchesAsset(file: { name: string; size: number }, asset: As
   return asset.source.kind === 'file' && asset.source.fileName === file.name && asset.source.size === file.size;
 }
 
-export const PROJECT_VERSION = 2;
+export const PROJECT_VERSION = 3;
 
 export interface Project {
-  version: 2;
+  version: 3;
   id: ID;
   name: string;
   compositions: Composition[];
@@ -355,6 +398,7 @@ export function createComposition(): Composition {
     content: { audioFreq: 440 },
     visible: true,
     locked: false,
+    audio: defaultLayerAudio(),
   };
 
   return {
@@ -365,12 +409,14 @@ export function createComposition(): Composition {
     fps: 60,
     duration: 10,
     layers: [title, shape, background, audio],
+    audio: { sampleRate: DEFAULT_AUDIO_SAMPLE_RATE, channels: 2 },
+    colorSpace: 'srgb',
   };
 }
 
 export function createProject(): Project {
   return {
-    version: 2,
+    version: 3,
     id: crypto.randomUUID(),
     name: 'ZiStudio Master Project',
     compositions: [createComposition()],
@@ -448,6 +494,22 @@ function migrateV1toV2(raw: any): any {
   return { ...raw, version: 2, assets, compositions };
 }
 
+/**
+ * v2 -> v3: compositions gain their output audio format and color space; layers that carry
+ * sound (audio layers and video layers) gain a mix setting.
+ */
+function migrateV2toV3(raw: any): any {
+  const compositions = (raw.compositions ?? []).map((comp: any) => ({
+    ...comp,
+    audio: comp.audio ?? { sampleRate: DEFAULT_AUDIO_SAMPLE_RATE, channels: 2 },
+    colorSpace: comp.colorSpace ?? 'srgb',
+    layers: (comp.layers ?? []).map((layer: any) =>
+      (layer.type === 'audio' || layer.type === 'video') && !layer.audio ? { ...layer, audio: defaultLayerAudio() } : layer
+    ),
+  }));
+  return { ...raw, version: 3, compositions };
+}
+
 export function deserializeProject(json: string): Project {
   let parsed: any;
   try {
@@ -462,5 +524,6 @@ export function deserializeProject(json: string): Project {
     throw new Error(`This project was saved by a newer ZiStudio (format v${parsed.version}).`);
   }
   if (parsed.version === 1) parsed = migrateV1toV2(parsed);
+  if (parsed.version === 2) parsed = migrateV2toV3(parsed);
   return bindLayerMedia(parsed as Project);
 }
